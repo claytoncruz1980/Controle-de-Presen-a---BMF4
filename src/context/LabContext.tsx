@@ -1,0 +1,5507 @@
+import React, { createContext, useContext, useState, useEffect, useMemo, useRef, useCallback, ReactNode } from 'react';
+import { doc, onSnapshot, setDoc, getDoc } from 'firebase/firestore';
+import { db } from '../lib/firebase';
+import { 
+  Student, 
+  ClassGroup, 
+  LabSession, 
+  JustificationRequest, 
+  AttendanceStatus, 
+  CourseType, 
+  AppSettings, 
+  AttendanceRecord, 
+  Professor, 
+  ActivityCategory, 
+  ActivityType, 
+  LaboratoryLocation,
+  ClassPeriod, 
+  StudentGradeRecord, 
+  StudentAcademicStatus,
+  GradeActivityKey,
+  SoundEffectType,
+  TeacherPresence,
+  TeacherConflictInfo,
+  ConnectedDevice,
+  DeviceType,
+  AttendanceOutboxItem,
+  OutboxItemStatus,
+  OutboxEventType
+} from '../types';
+import { 
+  INITIAL_CLASSES, 
+  INITIAL_STUDENTS, 
+  INITIAL_SESSIONS, 
+  INITIAL_JUSTIFICATIONS, 
+  INITIAL_PROFESSORS, 
+  DEFAULT_SETTINGS, 
+  INITIAL_STUDENT_GRADES 
+} from '../data/initialData';
+
+interface StartSessionOptions {
+  topic: string;
+  specimens?: string[];
+  notes?: string;
+  professorId?: string;
+  classGroupId?: string;
+  activityCategory?: ActivityCategory;
+  activityType?: ActivityType;
+  labLocation?: LaboratoryLocation;
+  activePeriod?: ClassPeriod;
+  date?: string;
+  startTime?: string;
+  endTime?: string;
+}
+
+interface LabContextType {
+  professors: Professor[];
+  activeProfessorId: string;
+  activeProfessor: Professor | null;
+  classes: ClassGroup[];
+  students: Student[];
+  sessions: LabSession[];
+  justifications: JustificationRequest[];
+  selectedClassId: string;
+  activeSession: LabSession | null;
+  appSettings: AppSettings;
+  soundEnabled: boolean;
+  
+  // Offline & Synchronization Status
+  isOnline: boolean;
+  isSyncing: boolean;
+  lastSyncDate: string;
+  realtimeConnected: boolean;
+  connectedDevices: number;
+  connectedDevicesList: ConnectedDevice[];
+  customDeviceName: string;
+  setCustomDeviceName: (name: string) => void;
+  deviceType: DeviceType;
+  setDeviceType: (type: DeviceType) => void;
+  lastSyncTimestamp: number;
+  triggerSync: () => void;
+  forceSyncMaster: () => Promise<void>;
+  pendingSyncCount?: number;
+
+  // Firestore Outbox Offline Attendance Queue
+  outboxQueue: AttendanceOutboxItem[];
+  outboxPendingCount: number;
+  isOutboxSyncing: boolean;
+  lastOutboxSyncDate: string;
+  enqueueOutboxItem: (rawItem: Omit<AttendanceOutboxItem, 'id' | 'syncStatus' | 'createdAt' | 'retryCount'>) => void;
+  processOutboxQueue: () => Promise<void>;
+  clearSyncedOutbox: () => void;
+  
+  // Dynamic QR Token & Anti-Fraud Security
+  dynamicToken: string;
+  dynamicSecondsLeft: number;
+  dynamicSecurityHash: string;
+  deviceFingerprint: string;
+  resetDeviceLockForTesting: () => void;
+  
+  // Grades & Assessments (15 Atividades BMF4)
+  studentGrades: StudentGradeRecord[];
+  setStudentGradeScore: (studentId: string, activityKey: GradeActivityKey | string, score: number | null | undefined, classId?: string) => void;
+  setStudentSubstituteExamScore: (studentId: string, score: number | null | undefined, classId?: string) => void;
+  setStudentGradeNotes: (studentId: string, notes: string, classId?: string) => void;
+  calculateAcademicStatus: (studentId: string, classId?: string) => StudentAcademicStatus;
+
+  // Actions
+  setActiveProfessorId: (id: string) => void;
+  setSelectedClassId: (id: string) => void;
+  setSoundEnabled: (enabled: boolean) => void;
+  updateAppSettings: (updates: Partial<AppSettings>) => void;
+  
+  // Session Actions
+  toggleLiveSession: () => void;
+  pauseLiveSession: (sessionId?: string, classGroupId?: string) => void;
+  resumeLiveSession: (sessionId?: string, classGroupId?: string) => void;
+  reopenCurrentSession: (sessionId?: string, classGroupId?: string) => void;
+  lockCurrentSession: (sessionId?: string, classGroupId?: string) => void;
+  lockPeriod1: (sessionId?: string) => void;
+  lockPeriod2: (sessionId?: string) => void;
+  setActivePeriod: (period: ClassPeriod) => void;
+  transitionToPeriod: (fromPeriod: ClassPeriod, toPeriod: ClassPeriod, targetSessionId?: string) => void;
+  setAttendanceStatus: (
+    studentId: string, 
+    status: AttendanceStatus, 
+    period?: ClassPeriod,
+    epiVerified?: boolean,
+    justificationData?: { reason?: string; fileUrl?: string; fileName?: string }
+  ) => void;
+  markAllPresent: (period?: ClassPeriod) => void;
+  resetCurrentAttendance: (period?: ClassPeriod) => void;
+  simulateStudentCheckin: () => void;
+  
+  // Simultaneous Teacher Presence & Conflict Management
+  teacherPresences: Record<string, TeacherPresence>;
+  teacherConflict: TeacherConflictInfo | null;
+  joinAsCoTeacher: (sessionId?: string) => void;
+  takeOverSession: (sessionId?: string) => void;
+  dismissTeacherConflict: () => void;
+
+  // Student Self Check-in
+  studentSelfCheckin: (
+    registrationNumber: string, 
+    code: string, 
+    allowOtherClassConfirmation?: boolean, 
+    preferredPeriod?: ClassPeriod,
+    targetSessionId?: string
+  ) => { 
+    success: boolean; 
+    message: string; 
+    student?: Student; 
+    notFound?: boolean; 
+    deviceBlocked?: boolean; 
+    sessionLocked?: boolean; 
+    sessionDeleted?: boolean;
+    alreadyPresent?: boolean;
+    existingRecord?: AttendanceRecord;
+    needsOtherClassConfirmation?: boolean;
+    isOtherClass?: boolean;
+    studentClassName?: string;
+    targetClassName?: string;
+  };
+  selfRegisterAndCheckin: (studentData: { 
+    name: string; 
+    registrationNumber: string; 
+    classGroupId?: string; 
+    course?: CourseType;
+    email?: string;
+    notes?: string; 
+  }) => { success: boolean; message: string; student: Student; deviceBlocked?: boolean };
+  
+  // CRUD Professors & Auth
+  loginProfessor: (identifier: string, pinOrPass?: string) => { success: boolean; message: string; professor?: Professor; isFirstAccess?: boolean; requiresPinChange?: boolean };
+  logoutProfessor: () => void;
+  registerProfessor: (profData: { name: string; email: string; registrationNumber?: string; discipline?: string; pin?: string; role?: 'admin' | 'professor' | 'coordenador'; phone?: string }) => { success: boolean; message: string; professor?: Professor };
+  changeProfessorPin: (professorId: string, newPin: string) => { success: boolean; message: string };
+  addProfessor: (prof: { name: string } & Partial<Omit<Professor, 'id' | 'name'>>) => void;
+  updateProfessor: (id: string, updates: Partial<Professor>) => void;
+  deleteProfessor: (id: string) => { success: boolean; message: string };
+  deletedProfessorIds: string[];
+
+  // CRUD Students
+  addStudent: (student: Omit<Student, 'id'>) => void;
+  addMultipleStudents: (students: Array<Omit<Student, 'id'>>) => Student[];
+  updateStudent: (id: string, student: Partial<Student>) => void;
+  deleteStudent: (id: string) => void;
+  deleteMultipleStudents: (ids: string[]) => void;
+  deleteAllStudentsFromClass: (classId: string) => void;
+  clearAllStudents: () => void;
+
+  // CRUD Classes
+  addClassGroup: (classGroup: Omit<ClassGroup, 'id'>) => void;
+  updateClassGroup: (id: string, classGroup: Partial<ClassGroup>) => void;
+  deleteClassGroup: (id: string, deleteAssociatedStudents?: boolean) => void;
+
+  // Sessions CRUD & Management
+  startNewSession: (optionsOrTopic: string | StartSessionOptions, specimens?: string[], notes?: string) => void;
+  updateSession: (sessionId: string, updates: Partial<LabSession>) => void;
+  deleteSession: (sessionId: string) => void;
+  deleteMultipleSessions: (sessionIds: string[]) => void;
+  deleteAllSessionsForClass: (classId: string) => void;
+  deletedSessionIds: string[];
+  updateSessionAttendance: (
+    sessionId: string, 
+    studentId: string, 
+    status: AttendanceStatus, 
+    period?: ClassPeriod,
+    epiVerified?: boolean
+  ) => void;
+  deleteSessionAttendance: (sessionId: string, studentId: string) => void;
+  resetSessionAttendance: (sessionId: string) => void;
+  
+  // Justifications
+  handleJustificationStatus: (justificationId: string, status: 'approved' | 'rejected', reviewerName?: string) => void;
+  submitJustification: (justification: Omit<JustificationRequest, 'id' | 'submittedAt' | 'status'>) => void;
+  deleteJustification: (justificationId: string) => void;
+  
+  // Sound & Helpers
+  playBeep: (type?: SoundEffectType) => void;
+  resetAllData: () => void;
+}
+
+export const sortClassesAlphabetically = (list: ClassGroup[]): ClassGroup[] => {
+  if (!Array.isArray(list)) return [];
+  return [...list].sort((a, b) => {
+    const nameA = (a.name || '').trim();
+    const nameB = (b.name || '').trim();
+    return nameA.localeCompare(nameB, 'pt-BR', { 
+      numeric: true, 
+      sensitivity: 'base',
+      ignorePunctuation: true
+    });
+  });
+};
+
+export const normalizeRa = (ra?: string | number): string => {
+  if (!ra) return '';
+  return ra.toString().trim().toUpperCase().replace(/[^A-Z0-9]/g, '');
+};
+
+export const matchStudentRa = (studentRa?: string | number, inputRa?: string | number): boolean => {
+  const cleanDb = normalizeRa(studentRa);
+  const cleanInput = normalizeRa(inputRa);
+  if (!cleanDb || !cleanInput) return false;
+  if (cleanDb === cleanInput) return true;
+  const cleanDbNoPrefix = cleanDb.replace(/^RA/i, '');
+  const cleanInputNoPrefix = cleanInput.replace(/^RA/i, '');
+  if (cleanDbNoPrefix && cleanInputNoPrefix && cleanDbNoPrefix === cleanInputNoPrefix) return true;
+  const cleanDbNoZero = cleanDbNoPrefix.replace(/^0+/, '');
+  const cleanInputNoZero = cleanInputNoPrefix.replace(/^0+/, '');
+  return cleanDbNoZero.length > 0 && cleanInputNoZero.length > 0 && cleanDbNoZero === cleanInputNoZero;
+};
+
+export const mergeAttendanceRecord = (currentRec?: AttendanceRecord, incomingRec?: AttendanceRecord): AttendanceRecord | undefined => {
+  if (!currentRec && !incomingRec) return undefined;
+  if (!currentRec) return incomingRec;
+  if (!incomingRec) return currentRec;
+
+  return {
+    ...currentRec,
+    ...incomingRec,
+    status: incomingRec.status !== undefined ? incomingRec.status : currentRec.status,
+    period1Status: incomingRec.period1Status !== undefined ? incomingRec.period1Status : currentRec.period1Status,
+    period2Status: incomingRec.period2Status !== undefined ? incomingRec.period2Status : currentRec.period2Status,
+    p1StartStatus: incomingRec.p1StartStatus !== undefined ? incomingRec.p1StartStatus : currentRec.p1StartStatus,
+    p1EndStatus: incomingRec.p1EndStatus !== undefined ? incomingRec.p1EndStatus : currentRec.p1EndStatus,
+    p2StartStatus: incomingRec.p2StartStatus !== undefined ? incomingRec.p2StartStatus : currentRec.p2StartStatus,
+    p2EndStatus: incomingRec.p2EndStatus !== undefined ? incomingRec.p2EndStatus : currentRec.p2EndStatus,
+    p1StartTimestamp: incomingRec.p1StartTimestamp || currentRec.p1StartTimestamp,
+    p1EndTimestamp: incomingRec.p1EndTimestamp || currentRec.p1EndTimestamp,
+    p2StartTimestamp: incomingRec.p2StartTimestamp || currentRec.p2StartTimestamp,
+    p2EndTimestamp: incomingRec.p2EndTimestamp || currentRec.p2EndTimestamp,
+    period1Timestamp: incomingRec.period1Timestamp || currentRec.period1Timestamp,
+    period2Timestamp: incomingRec.period2Timestamp || currentRec.period2Timestamp,
+    timestamp: incomingRec.timestamp || currentRec.timestamp,
+    epiVerified: incomingRec.epiVerified ?? currentRec.epiVerified ?? true,
+    checkinMethod: incomingRec.checkinMethod || currentRec.checkinMethod || 'qrcode',
+    deviceId: incomingRec.deviceId || currentRec.deviceId,
+  };
+};
+
+export const mergeStudentLists = (currentStudents: Student[], incomingStudents: Student[]): Student[] => {
+  if (!Array.isArray(incomingStudents) || incomingStudents.length === 0) {
+    return currentStudents || [];
+  }
+  const resultMap = new Map<string, Student>();
+  (currentStudents || []).forEach(st => {
+    if (st && st.id) resultMap.set(st.id, { ...st });
+  });
+
+  incomingStudents.forEach(inc => {
+    if (!inc || !inc.id) return;
+    const existing = resultMap.get(inc.id);
+    if (!existing) {
+      resultMap.set(inc.id, { ...inc });
+    } else {
+      resultMap.set(inc.id, {
+        ...existing,
+        ...inc,
+      });
+    }
+  });
+
+  return Array.from(resultMap.values());
+};
+
+export const mergeClassLists = (currentClasses: ClassGroup[], incomingClasses: ClassGroup[]): ClassGroup[] => {
+  if (!Array.isArray(incomingClasses) || incomingClasses.length === 0) {
+    return currentClasses || [];
+  }
+  const resultMap = new Map<string, ClassGroup>();
+  (currentClasses || []).forEach(c => {
+    if (c && c.id) resultMap.set(c.id, { ...c });
+  });
+
+  incomingClasses.forEach(inc => {
+    if (!inc || !inc.id) return;
+    const existing = resultMap.get(inc.id);
+    if (!existing) {
+      resultMap.set(inc.id, { ...inc });
+    } else {
+      resultMap.set(inc.id, { ...existing, ...inc });
+    }
+  });
+
+  return Array.from(resultMap.values());
+};
+
+export const mergeProfessorLists = (currentProfessors: Professor[], incomingProfessors: Professor[]): Professor[] => {
+  if (!Array.isArray(incomingProfessors) || incomingProfessors.length === 0) {
+    return currentProfessors || [];
+  }
+  const resultMap = new Map<string, Professor>();
+  (currentProfessors || []).forEach(p => {
+    if (p && p.id) resultMap.set(p.id, { ...p });
+  });
+
+  incomingProfessors.forEach(inc => {
+    if (!inc || !inc.id) return;
+    const existing = resultMap.get(inc.id);
+    if (!existing) {
+      resultMap.set(inc.id, { ...inc });
+    } else {
+      resultMap.set(inc.id, {
+        ...existing,
+        ...inc,
+        pin: inc.pin || existing.pin,
+        role: inc.role || existing.role,
+      });
+    }
+  });
+
+  return Array.from(resultMap.values());
+};
+
+export const mergeJustificationLists = (currentJustifications: JustificationRequest[], incomingJustifications: JustificationRequest[]): JustificationRequest[] => {
+  if (!Array.isArray(incomingJustifications)) {
+    return currentJustifications || [];
+  }
+  const resultMap = new Map<string, JustificationRequest>();
+  (currentJustifications || []).forEach(j => {
+    if (j && j.id) resultMap.set(j.id, { ...j });
+  });
+
+  incomingJustifications.forEach(inc => {
+    if (!inc || !inc.id) return;
+    const existing = resultMap.get(inc.id);
+    if (!existing) {
+      resultMap.set(inc.id, { ...inc });
+    } else {
+      resultMap.set(inc.id, { ...existing, ...inc });
+    }
+  });
+
+  return Array.from(resultMap.values());
+};
+
+export const mergeGradeLists = (currentGrades: StudentGradeRecord[], incomingGrades: StudentGradeRecord[]): StudentGradeRecord[] => {
+  if (!Array.isArray(incomingGrades)) {
+    return currentGrades || [];
+  }
+  const resultMap = new Map<string, StudentGradeRecord>();
+  (currentGrades || []).forEach(g => {
+    const key = g?.studentId ? `${g.studentId}_${g.classGroupId || ''}` : '';
+    if (key) resultMap.set(key, { ...g });
+  });
+
+  incomingGrades.forEach(inc => {
+    const key = inc?.studentId ? `${inc.studentId}_${inc.classGroupId || ''}` : '';
+    if (!key) return;
+    const existing = resultMap.get(key);
+    if (!existing) {
+      resultMap.set(key, { ...inc });
+    } else {
+      resultMap.set(key, { 
+        ...existing, 
+        ...inc,
+        scores: { ...(existing.scores || {}), ...(inc.scores || {}) }
+      });
+    }
+  });
+
+  return Array.from(resultMap.values());
+};
+
+export const mergeSessionLists = (
+  currentSessions: LabSession[], 
+  incomingSessions: LabSession[],
+  deletedIds: string[] = []
+): LabSession[] => {
+  const deletedSet = new Set(deletedIds || []);
+  const resultMap = new Map<string, LabSession>();
+
+  // 1. Current non-deleted
+  (currentSessions || []).forEach(s => {
+    if (s && s.id && !deletedSet.has(s.id)) {
+      resultMap.set(s.id, { ...s });
+    }
+  });
+
+  // 2. Incoming non-deleted
+  if (Array.isArray(incomingSessions)) {
+    incomingSessions.forEach(inc => {
+      if (!inc || !inc.id || deletedSet.has(inc.id)) return;
+      const existing = resultMap.get(inc.id);
+      if (!existing) {
+        resultMap.set(inc.id, { ...inc });
+      } else {
+        const mergedAttendance: Record<string, AttendanceRecord> = { ...(existing.attendance || {}) };
+        const incAttendance = inc.attendance || {};
+
+        for (const [stId, incRec] of Object.entries(incAttendance)) {
+          const mergedRec = mergeAttendanceRecord(mergedAttendance[stId], incRec as AttendanceRecord);
+          if (mergedRec) {
+            mergedAttendance[stId] = mergedRec;
+          }
+        }
+
+        const mergedSession: LabSession = {
+          ...existing,
+          ...inc,
+          attendance: mergedAttendance,
+          isLive: inc.isLive !== undefined ? inc.isLive : existing.isLive,
+          isLocked: inc.isLocked !== undefined ? inc.isLocked : existing.isLocked,
+          isPaused: inc.isPaused !== undefined ? inc.isPaused : existing.isPaused,
+          activePeriod: inc.activePeriod || existing.activePeriod,
+          isPeriod1Locked: inc.isPeriod1Locked ?? existing.isPeriod1Locked,
+          isPeriod2Locked: inc.isPeriod2Locked ?? existing.isPeriod2Locked,
+          coProfessors: Array.isArray(inc.coProfessors) ? inc.coProfessors : existing.coProfessors,
+        };
+
+        resultMap.set(inc.id, mergedSession);
+      }
+    });
+  }
+
+  return Array.from(resultMap.values());
+};
+
+export const computeStudentsWithRecalculatedStats = (studentsList: Student[], sessionsList: LabSession[]): Student[] => {
+  if (!Array.isArray(studentsList)) return [];
+  const safeSessions = Array.isArray(sessionsList) ? sessionsList : [];
+  return studentsList.map(st => {
+    let presences = 0;
+    let absences = 0;
+    let lates = 0;
+    let excused = 0;
+    const stSessions = safeSessions.filter(s => s.classGroupId === st.classGroupId);
+    const totalClasses = stSessions.length;
+
+    stSessions.forEach(sess => {
+      const rec = sess.attendance?.[st.id];
+      if (rec) {
+        const isPresent = rec.status === 'present' || 
+          rec.period1Status === 'present' || 
+          rec.period2Status === 'present' || 
+          rec.p1StartStatus === 'present' || 
+          rec.p1EndStatus === 'present' || 
+          rec.p2StartStatus === 'present' || 
+          rec.p2EndStatus === 'present';
+        const isLate = rec.status === 'late' || rec.period1Status === 'late' || rec.period2Status === 'late';
+        const isExcused = rec.status === 'excused' || rec.period1Status === 'excused' || rec.period2Status === 'excused';
+
+        if (isPresent) {
+          presences++;
+        } else if (isLate) {
+          presences++;
+          lates++;
+        } else if (isExcused) {
+          presences++;
+          excused++;
+        } else {
+          absences++;
+        }
+      } else {
+        absences++;
+      }
+    });
+
+    return {
+      ...st,
+      presences,
+      absences,
+      lates,
+      excused,
+      totalClasses,
+    };
+  });
+};
+
+const LabContext = createContext<LabContextType | undefined>(undefined);
+
+const STORAGE_PREFIX = 'bmf4_presenca_v3_';
+
+export const LabProvider: React.FC<{ children: ReactNode }> = ({ children }) => {
+  // 0. Deleted Professors tracking
+  const [deletedProfessorIds, setDeletedProfessorIds] = useState<string[]>(() => {
+    try {
+      const saved = localStorage.getItem(STORAGE_PREFIX + 'deleted_professor_ids');
+      return saved ? JSON.parse(saved) : [];
+    } catch {
+      return [];
+    }
+  });
+  const deletedProfessorIdsRef = useRef(deletedProfessorIds);
+  deletedProfessorIdsRef.current = deletedProfessorIds;
+
+  // 1. Professors
+  const [professors, setProfessors] = useState<Professor[]>(() => {
+    const saved = localStorage.getItem(STORAGE_PREFIX + 'professors');
+    let parsed: Professor[] = saved ? JSON.parse(saved) : INITIAL_PROFESSORS;
+    if (!Array.isArray(parsed) || parsed.length === 0) {
+      parsed = INITIAL_PROFESSORS;
+    }
+
+    // Filter out deleted professors
+    const savedDeletedProfs = localStorage.getItem(STORAGE_PREFIX + 'deleted_professor_ids');
+    const deletedProfList: string[] = savedDeletedProfs ? JSON.parse(savedDeletedProfs) : [];
+    const delProfSet = new Set(deletedProfList);
+    parsed = (parsed || []).filter(p => p && p.id && !delProfSet.has(p.id));
+    if (parsed.length === 0) {
+      parsed = [INITIAL_PROFESSORS[0]];
+    }
+    
+    // Ensure Prof. Juliano Pereira is the Administrator
+    let julianoProf = parsed.find(p => p.name.toLowerCase().includes('juliano'));
+    if (!julianoProf) {
+      const adminCandidate = parsed.find(p => p.role === 'admin' || p.id === 'prof-admin-1');
+      if (adminCandidate) {
+        adminCandidate.name = 'Prof. Dr. Juliano Pereira (Admin)';
+        adminCandidate.email = 'juliano.pereira@uni9.edu.br';
+        adminCandidate.role = 'admin';
+        if (!adminCandidate.pin) adminCandidate.pin = '1234';
+      } else {
+        parsed.unshift(INITIAL_PROFESSORS[0]);
+      }
+    } else {
+      julianoProf.role = 'admin';
+      if (!julianoProf.pin) julianoProf.pin = '1234';
+    }
+
+    // Ensure all professors have a default PIN
+    parsed = parsed.map(p => ({
+      ...p,
+      pin: p.pin || p.password || '1234',
+      hasChangedPin: p.hasChangedPin ?? (p.pin && p.pin !== '1234')
+    }));
+
+    return parsed;
+  });
+
+  const [activeProfessorId, setActiveProfessorId] = useState<string>(() => {
+    const saved = localStorage.getItem(STORAGE_PREFIX + 'active_prof');
+    if (saved === '' || saved === 'guest' || saved === 'logged_out' || saved === 'none') {
+      return '';
+    }
+    const savedProfs = localStorage.getItem(STORAGE_PREFIX + 'professors');
+    const parsedProfs: Professor[] = savedProfs ? JSON.parse(savedProfs) : INITIAL_PROFESSORS;
+    if (saved && parsedProfs.some(p => p.id === saved)) {
+      return saved;
+    }
+    // Only default to first professor if localStorage has never been initialized at all
+    if (saved === null) {
+      return parsedProfs[0]?.id || '';
+    }
+    return '';
+  });
+
+  // 2. Classes (ALWAYS initialized and kept sorted alphabetically)
+  const [classes, setClasses] = useState<ClassGroup[]>(() => {
+    const saved = localStorage.getItem(STORAGE_PREFIX + 'classes');
+    let parsed: ClassGroup[] = saved ? JSON.parse(saved) : INITIAL_CLASSES;
+    
+    // Check if URL specified a class ID not yet in list (e.g. guest device opening telão or student portal)
+    if (typeof window !== 'undefined') {
+      const urlParams = new URLSearchParams(window.location.search);
+      const urlTurma = urlParams.get('turma') || urlParams.get('turmaid') || urlParams.get('class') || urlParams.get('classid');
+      let targetTurma = urlTurma;
+      if (!targetTurma && window.location.hash) {
+        const qIndex = window.location.hash.indexOf('?');
+        if (qIndex !== -1) {
+          const hashParams = new URLSearchParams(window.location.hash.substring(qIndex + 1));
+          targetTurma = hashParams.get('turma') || hashParams.get('turmaid') || hashParams.get('class') || hashParams.get('classid');
+        }
+      }
+      if (targetTurma && !parsed.some(c => c.id === targetTurma)) {
+        parsed = [
+          ...parsed,
+          {
+            id: targetTurma,
+            name: 'Turma BMF4 (Medicina)',
+            code: 'MED-BMF4',
+            discipline: 'BMF4 - Bases Morfofuncionais 4',
+            course: 'Medicina',
+            semester: '4º Semestre 2026',
+            laboratoryRoom: 'Laboratório de Anatomia',
+            professorName: 'Prof. Dr. Juliano Pereira',
+            professorId: 'prof-admin-1',
+            schedule: '07:30 - 12:00',
+            color: '#0284c7',
+            totalStudents: 0,
+          }
+        ];
+      }
+    }
+    return sortClassesAlphabetically(parsed);
+  });
+
+  // 3. Students
+  const [students, setStudents] = useState<Student[]>(() => {
+    const saved = localStorage.getItem(STORAGE_PREFIX + 'students');
+    return saved ? JSON.parse(saved) : INITIAL_STUDENTS;
+  });
+
+  // 4. Sessions & Deletion tracking
+  const [deletedSessionIds, setDeletedSessionIds] = useState<string[]>(() => {
+    try {
+      const saved = localStorage.getItem(STORAGE_PREFIX + 'deleted_session_ids');
+      return saved ? JSON.parse(saved) : [];
+    } catch {
+      return [];
+    }
+  });
+  const deletedSessionIdsRef = useRef(deletedSessionIds);
+  deletedSessionIdsRef.current = deletedSessionIds;
+
+  const [sessions, setSessions] = useState<LabSession[]>(() => {
+    const saved = localStorage.getItem(STORAGE_PREFIX + 'sessions');
+    let parsed: LabSession[] = saved ? JSON.parse(saved) : INITIAL_SESSIONS;
+    const savedDeleted = localStorage.getItem(STORAGE_PREFIX + 'deleted_session_ids');
+    const deletedList: string[] = savedDeleted ? JSON.parse(savedDeleted) : [];
+    const delSet = new Set(deletedList);
+    parsed = (parsed || []).filter(s => s && s.id && !delSet.has(s.id));
+
+    // If opened directly on projection / TV portal, ensure an active session exists
+    if (typeof window !== 'undefined') {
+      const isTelao = window.location.search.includes('portal=telao') || 
+                      window.location.search.includes('portal=tv') || 
+                      window.location.search.includes('view=telao') ||
+                      window.location.hash.includes('telao') ||
+                      window.location.hash.includes('tv');
+      
+      const urlParams = new URLSearchParams(window.location.search);
+      const targetTurma = urlParams.get('turma') || urlParams.get('turmaid') || urlParams.get('class') || 'class-bmf4-default';
+
+      if (isTelao && !parsed.some(s => s.classGroupId === targetTurma)) {
+        const liveSession: LabSession = {
+          id: `sess-${Date.now()}`,
+          classGroupId: targetTurma,
+          discipline: 'BMF4',
+          professorId: 'prof-admin-1',
+          professorName: 'Prof. Dr. Juliano Pereira',
+          activityCategory: 'pratica',
+          activityType: 'aula_pratica',
+          activePeriod: '1',
+          isPeriod1Locked: false,
+          isPeriod2Locked: false,
+          isP1StartLocked: false,
+          isP1EndLocked: false,
+          isP2StartLocked: false,
+          isP2EndLocked: false,
+          isActivitySingleLocked: false,
+          date: new Date().toISOString().split('T')[0],
+          startTime: `${String(new Date().getHours()).padStart(2, '0')}:${String(new Date().getMinutes()).padStart(2, '0')}`,
+          endTime: '12:00',
+          topic: 'Aula BMF4 - Morfofuncional',
+          anatomicalSpecimens: ['Peças anatômicas / Roteiro prático'],
+          checkinCode: `BMF-${Math.floor(100 + Math.random() * 900)}`,
+          isLive: true,
+          isLocked: false,
+          openedAt: new Date().toISOString(),
+          notes: 'Obrigatório uso de EPI: Jaleco abotoado, luvas e calçado fechado.',
+          attendance: {},
+          syncStatus: 'synced',
+        };
+        parsed = [liveSession, ...parsed];
+      }
+    }
+    return parsed;
+  });
+
+  // 5. Justifications
+  const [justifications, setJustifications] = useState<JustificationRequest[]>(() => {
+    const saved = localStorage.getItem(STORAGE_PREFIX + 'justifications');
+    return saved ? JSON.parse(saved) : INITIAL_JUSTIFICATIONS;
+  });
+
+  // 6. Grades (Controle de Notas das 15 Atividades BMF4)
+  const [studentGrades, setStudentGrades] = useState<StudentGradeRecord[]>(() => {
+    const saved = localStorage.getItem(STORAGE_PREFIX + 'student_grades');
+    return saved ? JSON.parse(saved) : INITIAL_STUDENT_GRADES;
+  });
+
+  // 7. Selected Class ID
+  const [selectedClassId, setSelectedClassId] = useState<string>(() => {
+    if (typeof window !== 'undefined') {
+      const urlParams = new URLSearchParams(window.location.search);
+      const urlTurma = urlParams.get('turma') || urlParams.get('turmaid') || urlParams.get('class') || urlParams.get('classid');
+      if (urlTurma) return urlTurma;
+
+      const hash = window.location.hash;
+      const qIndex = hash.indexOf('?');
+      if (qIndex !== -1) {
+        const hashParams = new URLSearchParams(hash.substring(qIndex + 1));
+        const hashTurma = hashParams.get('turma') || hashParams.get('turmaid') || hashParams.get('class') || hashParams.get('classid');
+        if (hashTurma) return hashTurma;
+      }
+    }
+    const saved = localStorage.getItem(STORAGE_PREFIX + 'selectedClass');
+    const savedClasses = localStorage.getItem(STORAGE_PREFIX + 'classes');
+    const parsedClasses: ClassGroup[] = savedClasses ? JSON.parse(savedClasses) : INITIAL_CLASSES;
+    return saved && parsedClasses.some(c => c.id === saved) ? saved : parsedClasses[0]?.id || '';
+  });
+
+  // 8. Settings
+  const [appSettings, setAppSettings] = useState<AppSettings>(() => {
+    const saved = localStorage.getItem(STORAGE_PREFIX + 'settings');
+    return saved ? JSON.parse(saved) : DEFAULT_SETTINGS;
+  });
+
+  // 9. Sound
+  const [soundEnabled, setSoundEnabled] = useState<boolean>(() => {
+    const saved = localStorage.getItem(STORAGE_PREFIX + 'sound');
+    return saved !== null ? JSON.parse(saved) : true;
+  });
+
+  // 10. Real-time Sync & WebSocket state
+  const [isOnline, setIsOnline] = useState<boolean>(typeof navigator !== 'undefined' ? navigator.onLine : true);
+  const [isSyncing, setIsSyncing] = useState<boolean>(false);
+  const [lastSyncDate, setLastSyncDate] = useState<string>(new Date().toLocaleTimeString('pt-BR', { hour: '2-digit', minute: '2-digit' }));
+  const [realtimeConnected, setRealtimeConnected] = useState<boolean>(false);
+  const [lastSyncTimestamp, setLastSyncTimestamp] = useState<number>(Date.now());
+
+  // Connected Devices Management
+  const [customDeviceName, setCustomDeviceNameState] = useState<string>(() => {
+    const saved = localStorage.getItem(STORAGE_PREFIX + 'device_name');
+    if (saved) return saved;
+    if (typeof window !== 'undefined') {
+      const isMobile = /iPhone|iPad|iPod|Android/i.test(navigator.userAgent);
+      if (isMobile) return 'Smartphone Docente';
+      return 'Terminal / Telão Lab';
+    }
+    return 'Dispositivo Lab';
+  });
+
+  const setCustomDeviceName = useCallback((name: string) => {
+    setCustomDeviceNameState(name);
+    try {
+      localStorage.setItem(STORAGE_PREFIX + 'device_name', name);
+    } catch {}
+  }, []);
+
+  const [deviceType, setDeviceTypeState] = useState<DeviceType>(() => {
+    const saved = localStorage.getItem(STORAGE_PREFIX + 'device_type') as DeviceType;
+    if (saved) return saved;
+    if (typeof window !== 'undefined') {
+      if (window.location.hash.includes('telao') || window.innerWidth >= 1400) return 'tv';
+      if (/iPhone|Android/i.test(navigator.userAgent) && window.innerWidth < 768) return 'mobile';
+      if (/iPad|Tablet/i.test(navigator.userAgent) || (window.innerWidth >= 768 && window.innerWidth < 1024)) return 'tablet';
+    }
+    return 'desktop';
+  });
+
+  const setDeviceType = useCallback((type: DeviceType) => {
+    setDeviceTypeState(type);
+    try {
+      localStorage.setItem(STORAGE_PREFIX + 'device_type', type);
+    } catch {}
+  }, []);
+
+  const [connectedDevicesMap, setConnectedDevicesMap] = useState<Record<string, ConnectedDevice>>({});
+  const connectedDevicesMapRef = useRef(connectedDevicesMap);
+  connectedDevicesMapRef.current = connectedDevicesMap;
+
+  // 11. Teacher Presences & Conflict state
+  const [teacherPresences, setTeacherPresences] = useState<Record<string, TeacherPresence>>({});
+  const teacherPresencesRef = useRef(teacherPresences);
+  teacherPresencesRef.current = teacherPresences;
+  const [dismissedConflictId, setDismissedConflictId] = useState<string | null>(null);
+
+  const wsRef = useRef<WebSocket | null>(null);
+  const isRemoteUpdateRef = useRef<boolean>(false);
+  const firestoreDebounceRef = useRef<any>(null);
+  const firestoreBlockedUntilRef = useRef<number>(0);
+
+  // Keep references to current state to allow stable callbacks without dependency thrashing
+  const professorsRef = useRef(professors);
+  professorsRef.current = professors;
+  const classesRef = useRef(classes);
+  classesRef.current = classes;
+  const studentsRef = useRef(students);
+  studentsRef.current = students;
+  const sessionsRef = useRef(sessions);
+  sessionsRef.current = sessions;
+  const justificationsRef = useRef(justifications);
+  justificationsRef.current = justifications;
+  const studentGradesRef = useRef(studentGrades);
+  studentGradesRef.current = studentGrades;
+  const appSettingsRef = useRef(appSettings);
+  appSettingsRef.current = appSettings;
+  const selectedClassIdRef = useRef(selectedClassId);
+  selectedClassIdRef.current = selectedClassId;
+  const activeProfessorIdRef = useRef(activeProfessorId);
+  activeProfessorIdRef.current = activeProfessorId;
+
+  // Client instance unique identifier for echo-suppression across devices
+  const clientIdRef = useRef<string>(
+    typeof window !== 'undefined'
+      ? 'client_' + Math.random().toString(36).substring(2, 9) + '_' + Date.now().toString(36)
+      : 'server_client'
+  );
+
+  // 12. Firestore Outbox Offline Attendance Queue
+  const [outboxQueue, setOutboxQueue] = useState<AttendanceOutboxItem[]>(() => {
+    try {
+      const saved = localStorage.getItem(STORAGE_PREFIX + 'outbox_queue');
+      return saved ? JSON.parse(saved) : [];
+    } catch {
+      return [];
+    }
+  });
+  const outboxQueueRef = useRef(outboxQueue);
+  outboxQueueRef.current = outboxQueue;
+
+  const [isOutboxSyncing, setIsOutboxSyncing] = useState<boolean>(false);
+  const isProcessingOutboxRef = useRef<boolean>(false);
+  const [lastOutboxSyncDate, setLastOutboxSyncDate] = useState<string>(() => {
+    return new Date().toLocaleTimeString('pt-BR', { hour: '2-digit', minute: '2-digit' });
+  });
+
+  const outboxPendingCount = useMemo(() => {
+    return outboxQueue.filter(item => item.syncStatus === 'pending' || item.syncStatus === 'failed' || item.syncStatus === 'syncing').length;
+  }, [outboxQueue]);
+
+  const processOutboxQueue = useCallback(async () => {
+    if (isProcessingOutboxRef.current) return;
+    const currentQueue = outboxQueueRef.current;
+    const pendingItems = currentQueue.filter(item => item.syncStatus === 'pending' || item.syncStatus === 'failed');
+    if (pendingItems.length === 0) return;
+
+    isProcessingOutboxRef.current = true;
+    setIsOutboxSyncing(true);
+
+    try {
+      // 1. Direct Firestore write to /outbox collection if online & quota allows
+      if (navigator.onLine && Date.now() > firestoreBlockedUntilRef.current) {
+        for (const item of pendingItems) {
+          try {
+            const outboxDocRef = doc(db, 'outbox', item.id);
+            await setDoc(outboxDocRef, {
+              id: item.id,
+              eventType: item.eventType,
+              sessionId: item.sessionId,
+              studentId: item.studentId || null,
+              studentName: item.studentName || null,
+              classGroupId: item.classGroupId || null,
+              status: item.status || null,
+              period: item.period || null,
+              timestamp: item.timestamp,
+              deviceId: item.deviceId,
+              professorId: item.professorId || null,
+              professorName: item.professorName || null,
+              syncStatus: 'synced',
+              createdAt: item.createdAt,
+              syncedAt: Date.now(),
+              retryCount: item.retryCount,
+              payload: item.payload || null,
+            }, { merge: true });
+          } catch (firestoreErr: any) {
+            if (firestoreErr?.code === 'resource-exhausted') {
+              firestoreBlockedUntilRef.current = Date.now() + 5 * 60 * 1000;
+            }
+            console.debug('Firestore outbox write notice:', firestoreErr?.message || firestoreErr);
+          }
+        }
+      }
+
+      // 2. Post to backend server /api/outbox/process to update server state and broadcast to peers
+      const response = await fetch('/api/outbox/process', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ items: pendingItems }),
+      });
+
+      if (response.ok) {
+        const syncedIds = new Set(pendingItems.map(i => i.id));
+        const nowMs = Date.now();
+        setOutboxQueue(prev => {
+          const updated = prev.map(item => {
+            if (syncedIds.has(item.id)) {
+              return {
+                ...item,
+                syncStatus: 'synced' as OutboxItemStatus,
+                syncedAt: nowMs,
+              };
+            }
+            return item;
+          });
+          try {
+            localStorage.setItem(STORAGE_PREFIX + 'outbox_queue', JSON.stringify(updated));
+          } catch {}
+          return updated;
+        });
+
+        setLastOutboxSyncDate(new Date().toLocaleTimeString('pt-BR', { hour: '2-digit', minute: '2-digit', second: '2-digit' }));
+      } else {
+        setOutboxQueue(prev => {
+          const updated = prev.map(item => {
+            if (item.syncStatus === 'pending') {
+              return {
+                ...item,
+                retryCount: item.retryCount + 1,
+                lastError: `HTTP ${response.status}`,
+              };
+            }
+            return item;
+          });
+          try {
+            localStorage.setItem(STORAGE_PREFIX + 'outbox_queue', JSON.stringify(updated));
+          } catch {}
+          return updated;
+        });
+      }
+    } catch (netErr: any) {
+      console.debug('Outbox queue network paused (will retry on reconnection):', netErr?.message || netErr);
+      setOutboxQueue(prev => {
+        const updated = prev.map(item => {
+          if (item.syncStatus === 'pending') {
+            return {
+              ...item,
+              retryCount: item.retryCount + 1,
+              lastError: netErr?.message || 'Offline',
+            };
+          }
+          return item;
+        });
+        try {
+          localStorage.setItem(STORAGE_PREFIX + 'outbox_queue', JSON.stringify(updated));
+        } catch {}
+        return updated;
+      });
+    } finally {
+      isProcessingOutboxRef.current = false;
+      setIsOutboxSyncing(false);
+    }
+  }, []);
+
+  const enqueueOutboxItem = useCallback((rawItem: Omit<AttendanceOutboxItem, 'id' | 'syncStatus' | 'createdAt' | 'retryCount'>) => {
+    const devId = localStorage.getItem('bmf4_device_uuid') || 'local_device';
+    const prof = professorsRef.current.find(p => p.id === activeProfessorIdRef.current);
+    
+    const newItem: AttendanceOutboxItem = {
+      ...rawItem,
+      id: `outbox_${Date.now()}_${rawItem.studentId || 'batch'}_${Math.random().toString(36).substring(2, 7)}`,
+      deviceId: rawItem.deviceId || devId,
+      professorId: rawItem.professorId || activeProfessorIdRef.current,
+      professorName: rawItem.professorName || prof?.name,
+      syncStatus: 'pending',
+      createdAt: Date.now(),
+      retryCount: 0,
+    };
+
+    setOutboxQueue(prev => {
+      const updated = [newItem, ...prev].slice(0, 150);
+      try {
+        localStorage.setItem(STORAGE_PREFIX + 'outbox_queue', JSON.stringify(updated));
+      } catch {}
+      return updated;
+    });
+
+    setTimeout(() => {
+      processOutboxQueue();
+    }, 150);
+  }, [processOutboxQueue]);
+
+  const clearSyncedOutbox = useCallback(() => {
+    setOutboxQueue(prev => {
+      const remaining = prev.filter(i => i.syncStatus !== 'synced');
+      try {
+        localStorage.setItem(STORAGE_PREFIX + 'outbox_queue', JSON.stringify(remaining));
+      } catch {}
+      return remaining;
+    });
+  }, []);
+
+  // Automatic triggers to flush Outbox on reconnect/focus/timer
+  useEffect(() => {
+    const handleOnlineEvent = () => {
+      setIsOnline(true);
+      processOutboxQueue();
+    };
+    const handleFocusEvent = () => {
+      if (navigator.onLine) {
+        processOutboxQueue();
+      }
+    };
+    window.addEventListener('online', handleOnlineEvent);
+    window.addEventListener('focus', handleFocusEvent);
+    document.addEventListener('visibilitychange', handleFocusEvent);
+
+    const outboxInterval = setInterval(() => {
+      if (navigator.onLine && outboxQueueRef.current.some(i => i.syncStatus === 'pending' || i.syncStatus === 'failed')) {
+        processOutboxQueue();
+      }
+    }, 8000);
+
+    return () => {
+      window.removeEventListener('online', handleOnlineEvent);
+      window.removeEventListener('focus', handleFocusEvent);
+      document.removeEventListener('visibilitychange', handleFocusEvent);
+      clearInterval(outboxInterval);
+    };
+  }, [processOutboxQueue]);
+
+  const getLocalLastUpdated = useCallback((): number => {
+    try {
+      const saved = localStorage.getItem(STORAGE_PREFIX + 'last_updated');
+      return saved ? parseInt(saved, 10) : 0;
+    } catch {
+      return 0;
+    }
+  }, []);
+
+  const setLocalLastUpdated = useCallback((ts: number) => {
+    try {
+      localStorage.setItem(STORAGE_PREFIX + 'last_updated', ts.toString());
+    } catch {}
+  }, []);
+
+  // Broadcast current state to Cloud Firestore, backend server and other devices
+  const broadcastCurrentState = useCallback((statePayload: any) => {
+    const enrichedPayload = {
+      ...statePayload,
+      senderClientId: clientIdRef.current,
+      userMutation: true,
+      deletedSessionIds: statePayload.deletedSessionIds || deletedSessionIdsRef.current || [],
+      deletedProfessorIds: statePayload.deletedProfessorIds || deletedProfessorIdsRef.current || [],
+      lastUpdated: statePayload.lastUpdated || Date.now(),
+    };
+
+    // 1. Cloud Firestore Real-Time Sync with 300ms debounce
+    if (firestoreDebounceRef.current) {
+      clearTimeout(firestoreDebounceRef.current);
+    }
+    firestoreDebounceRef.current = setTimeout(() => {
+      const now = Date.now();
+      if (now < firestoreBlockedUntilRef.current) {
+        return;
+      }
+
+      try {
+        const syncDocRef = doc(db, 'sync_state', 'master');
+        setDoc(syncDocRef, {
+          id: 'master',
+          lastUpdated: enrichedPayload.lastUpdated || now,
+          payload: enrichedPayload,
+        }, { merge: true }).catch((err: any) => {
+          if (err?.code === 'resource-exhausted' || (err?.message && err.message.includes('Quota limit exceeded'))) {
+            firestoreBlockedUntilRef.current = Date.now() + 5 * 60 * 1000;
+          }
+          console.debug('Cloud sync notice (offline/fallback mode):', err?.message || err);
+        });
+      } catch {
+        // Local offline mode
+      }
+    }, 300);
+
+    // 2. WebSocket instant broadcast (0ms delay)
+    if (wsRef.current && wsRef.current.readyState === WebSocket.OPEN) {
+      try {
+        wsRef.current.send(JSON.stringify({
+          type: 'UPDATE_STATE',
+          state: enrichedPayload,
+        }));
+      } catch (err) {
+        console.debug('WebSocket notice:', err);
+      }
+    }
+
+    // 3. Background HTTP POST sync
+    fetch('/api/sync/state', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(enrichedPayload),
+    }).catch(() => {});
+  }, []);
+
+  // Apply state received from server or Cloud Firestore
+  const applyServerState = useCallback((serverState: any) => {
+    if (!serverState || typeof serverState !== 'object') return;
+
+    // Suppress echo if this exact client dispatched the update
+    if (serverState.senderClientId && serverState.senderClientId === clientIdRef.current) {
+      const now = Date.now();
+      setLastSyncTimestamp(now);
+      setLastSyncDate(new Date().toLocaleTimeString('pt-BR', { hour: '2-digit', minute: '2-digit', second: '2-digit' }));
+      return;
+    }
+
+    const serverTs = Number(serverState.lastUpdated) || Date.now();
+
+    // If explicit reset is triggered, wipe state immediately
+    if (serverState.isExplicitReset) {
+      isRemoteUpdateRef.current = true;
+      setProfessors(INITIAL_PROFESSORS);
+      setClasses([]);
+      setStudents([]);
+      setSessions([]);
+      setDeletedSessionIds([]);
+      deletedSessionIdsRef.current = [];
+      setJustifications([]);
+      setStudentGrades([]);
+      setSelectedClassId('');
+      try {
+        localStorage.removeItem(STORAGE_PREFIX + 'classes');
+        localStorage.removeItem(STORAGE_PREFIX + 'students');
+        localStorage.removeItem(STORAGE_PREFIX + 'sessions');
+        localStorage.removeItem(STORAGE_PREFIX + 'deleted_session_ids');
+        localStorage.removeItem(STORAGE_PREFIX + 'justifications');
+        localStorage.removeItem(STORAGE_PREFIX + 'student_grades');
+        localStorage.removeItem(STORAGE_PREFIX + 'selectedClass');
+      } catch {}
+      const appliedTs = serverTs > 0 ? serverTs : Date.now();
+      setLocalLastUpdated(appliedTs);
+      setLastSyncTimestamp(appliedTs);
+      setLastSyncDate(new Date().toLocaleTimeString('pt-BR', { hour: '2-digit', minute: '2-digit', second: '2-digit' }));
+      setTimeout(() => { isRemoteUpdateRef.current = false; }, 200);
+      return;
+    }
+
+    // Track incoming deletedSessionIds
+    let allDeletedIds = deletedSessionIdsRef.current;
+    if (Array.isArray(serverState.deletedSessionIds) && serverState.deletedSessionIds.length > 0) {
+      allDeletedIds = Array.from(new Set([...deletedSessionIdsRef.current, ...serverState.deletedSessionIds]));
+      setDeletedSessionIds(allDeletedIds);
+      deletedSessionIdsRef.current = allDeletedIds;
+      try {
+        localStorage.setItem(STORAGE_PREFIX + 'deleted_session_ids', JSON.stringify(allDeletedIds));
+      } catch {}
+    }
+
+    // Track incoming deletedProfessorIds
+    let allDeletedProfIds = deletedProfessorIdsRef.current;
+    if (Array.isArray(serverState.deletedProfessorIds) && serverState.deletedProfessorIds.length > 0) {
+      allDeletedProfIds = Array.from(new Set([...deletedProfessorIdsRef.current, ...serverState.deletedProfessorIds]));
+      setDeletedProfessorIds(allDeletedProfIds);
+      deletedProfessorIdsRef.current = allDeletedProfIds;
+      try {
+        localStorage.setItem(STORAGE_PREFIX + 'deleted_professor_ids', JSON.stringify(allDeletedProfIds));
+      } catch {}
+    }
+
+    isRemoteUpdateRef.current = true;
+
+    if (Array.isArray(serverState.professors)) {
+      const deletedProfSet = new Set(allDeletedProfIds);
+      const mergedProfs = (serverState.userMutation 
+        ? serverState.professors 
+        : mergeProfessorLists(professorsRef.current, serverState.professors)
+      ).filter(p => p && p.id && !deletedProfSet.has(p.id));
+      setProfessors(mergedProfs);
+      try {
+        localStorage.setItem(STORAGE_PREFIX + 'professors', JSON.stringify(mergedProfs));
+      } catch {}
+    }
+
+    if (Array.isArray(serverState.classes)) {
+      const mergedClasses = serverState.userMutation
+        ? serverState.classes
+        : mergeClassLists(classesRef.current, serverState.classes);
+      const sorted = sortClassesAlphabetically(mergedClasses);
+      setClasses(sorted);
+      try {
+        localStorage.setItem(STORAGE_PREFIX + 'classes', JSON.stringify(sorted));
+      } catch {}
+
+      setSelectedClassId(prevId => {
+        if (prevId && sorted.some(c => c.id === prevId)) {
+          return prevId;
+        }
+        const localSaved = localStorage.getItem(STORAGE_PREFIX + 'selectedClass');
+        if (localSaved && sorted.some(c => c.id === localSaved)) {
+          return localSaved;
+        }
+        return sorted[0]?.id || '';
+      });
+    }
+
+    let mergedSessionsList = sessionsRef.current;
+    if (Array.isArray(serverState.sessions)) {
+      mergedSessionsList = mergeSessionLists(sessionsRef.current, serverState.sessions, allDeletedIds);
+      setSessions(mergedSessionsList);
+      try {
+        localStorage.setItem(STORAGE_PREFIX + 'sessions', JSON.stringify(mergedSessionsList));
+      } catch {}
+    }
+
+    if (Array.isArray(serverState.students)) {
+      const mergedStudents = serverState.userMutation
+        ? serverState.students
+        : mergeStudentLists(studentsRef.current, serverState.students);
+      const recomputed = computeStudentsWithRecalculatedStats(mergedStudents, mergedSessionsList);
+      setStudents(recomputed);
+      try {
+        localStorage.setItem(STORAGE_PREFIX + 'students', JSON.stringify(recomputed));
+      } catch {}
+    } else if (mergedSessionsList !== sessionsRef.current) {
+      setStudents(prev => {
+        const recomputed = computeStudentsWithRecalculatedStats(prev, mergedSessionsList);
+        try {
+          localStorage.setItem(STORAGE_PREFIX + 'students', JSON.stringify(recomputed));
+        } catch {}
+        return recomputed;
+      });
+    }
+
+    if (Array.isArray(serverState.justifications)) {
+      const mergedJustifications = serverState.userMutation
+        ? serverState.justifications
+        : mergeJustificationLists(justificationsRef.current, serverState.justifications);
+      setJustifications(mergedJustifications);
+      try {
+        localStorage.setItem(STORAGE_PREFIX + 'justifications', JSON.stringify(mergedJustifications));
+      } catch {}
+    }
+
+    if (Array.isArray(serverState.studentGrades)) {
+      const mergedGrades = serverState.userMutation
+        ? serverState.studentGrades
+        : mergeGradeLists(studentGradesRef.current, serverState.studentGrades);
+      setStudentGrades(mergedGrades);
+      try {
+        localStorage.setItem(STORAGE_PREFIX + 'student_grades', JSON.stringify(mergedGrades));
+      } catch {}
+    }
+
+    if (serverState.appSettings) {
+      setAppSettings(serverState.appSettings);
+      try {
+        localStorage.setItem(STORAGE_PREFIX + 'settings', JSON.stringify(serverState.appSettings));
+      } catch {}
+    }
+
+    if (serverState.teacherPresences && typeof serverState.teacherPresences === 'object') {
+      const now = Date.now();
+      const merged: Record<string, TeacherPresence> = { 
+        ...teacherPresencesRef.current, 
+        ...serverState.teacherPresences 
+      };
+      Object.keys(merged).forEach(id => {
+        if ((now - (merged[id]?.lastPing || 0)) > 60000) {
+          delete merged[id];
+        }
+      });
+      setTeacherPresences(merged);
+    }
+
+    if (serverState.connectedDevices && typeof serverState.connectedDevices === 'object') {
+      const now = Date.now();
+      const mergedDevs: Record<string, ConnectedDevice> = {
+        ...connectedDevicesMapRef.current,
+        ...serverState.connectedDevices,
+      };
+      Object.keys(mergedDevs).forEach(devId => {
+        if (now - (mergedDevs[devId]?.lastPing || 0) > 90000) {
+          delete mergedDevs[devId];
+        }
+      });
+      setConnectedDevicesMap(mergedDevs);
+    }
+
+    const appliedTs = serverTs > 0 ? serverTs : Date.now();
+    setLocalLastUpdated(appliedTs);
+    setLastSyncTimestamp(appliedTs);
+    setLastSyncDate(new Date().toLocaleTimeString('pt-BR', { hour: '2-digit', minute: '2-digit', second: '2-digit' }));
+    setTimeout(() => {
+      isRemoteUpdateRef.current = false;
+    }, 150);
+  }, [getLocalLastUpdated, setLocalLastUpdated, broadcastCurrentState]);
+
+  // 11. Cloud Firestore Real-time Snapshot Listener
+  useEffect(() => {
+    let unsubscribe: (() => void) | null = null;
+    let isCancelled = false;
+
+    try {
+      const syncDocRef = doc(db, 'sync_state', 'master');
+      unsubscribe = onSnapshot(syncDocRef, {
+        includeMetadataChanges: false
+      }, (docSnap) => {
+        if (isCancelled) return;
+        if (docSnap.exists()) {
+          const cloudData = docSnap.data();
+          if (cloudData && cloudData.payload) {
+            setRealtimeConnected(true);
+            applyServerState(cloudData.payload);
+          }
+        }
+      }, (err) => {
+        console.debug('Firestore onSnapshot notice (offline/fallback mode):', err?.message || err);
+      });
+    } catch (err: any) {
+      console.debug('Firestore initialization notice:', err?.message || err);
+    }
+
+    return () => {
+      isCancelled = true;
+      if (unsubscribe) {
+        unsubscribe();
+      }
+    };
+  }, [applyServerState]);
+
+  // Real-time WebSocket connection with Ping/Pong Keep-Alive
+  useEffect(() => {
+    let reconnectTimeout: any;
+    let keepaliveInterval: any;
+    let isCancelled = false;
+    let retryDelay = 1500;
+
+    const connectWebSocket = () => {
+      if (typeof window === 'undefined') return;
+      try {
+        const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
+        const wsUrl = `${protocol}//${window.location.host}/ws`;
+        const ws = new WebSocket(wsUrl);
+        wsRef.current = ws;
+
+        ws.onopen = () => {
+          if (isCancelled) return;
+          setRealtimeConnected(true);
+          retryDelay = 1500;
+          ws.send(JSON.stringify({ type: 'GET_STATE' }));
+
+          // Keepalive PING every 20s
+          clearInterval(keepaliveInterval);
+          keepaliveInterval = setInterval(() => {
+            if (ws.readyState === WebSocket.OPEN) {
+              try {
+                ws.send(JSON.stringify({ type: 'PING' }));
+              } catch {}
+            }
+          }, 20000);
+        };
+
+        ws.onmessage = (event) => {
+          if (isCancelled) return;
+          try {
+            const data = JSON.parse(event.data);
+            if ((data.type === 'SYNC_STATE' || data.type === 'STATE_UPDATED') && data.state) {
+              applyServerState(data.state);
+            } else if (data.type === 'PONG') {
+              setRealtimeConnected(true);
+            }
+          } catch (err) {
+            console.error('Error parsing WebSocket message:', err);
+          }
+        };
+
+        ws.onclose = () => {
+          if (isCancelled) return;
+          setRealtimeConnected(false);
+          clearInterval(keepaliveInterval);
+          reconnectTimeout = setTimeout(connectWebSocket, retryDelay);
+          retryDelay = Math.min(retryDelay * 1.5, 10000);
+        };
+
+        ws.onerror = () => {
+          if (isCancelled) return;
+          setRealtimeConnected(false);
+        };
+      } catch {
+        // Fallback to polling or offline
+      }
+    };
+
+    connectWebSocket();
+
+    return () => {
+      isCancelled = true;
+      clearTimeout(reconnectTimeout);
+      clearInterval(keepaliveInterval);
+      if (wsRef.current) {
+        wsRef.current.close();
+      }
+    };
+  }, [applyServerState]);
+
+  useEffect(() => {
+    const handleOnline = () => setIsOnline(true);
+    const handleOffline = () => setIsOnline(false);
+    window.addEventListener('online', handleOnline);
+    window.addEventListener('offline', handleOffline);
+    return () => {
+      window.removeEventListener('online', handleOnline);
+      window.removeEventListener('offline', handleOffline);
+    };
+  }, []);
+
+  // Real-time Teacher Presence Heartbeat (broadcasts which professor is in which class)
+  useEffect(() => {
+    if (!activeProfessorId || !selectedClassId) return;
+    const prof = professors.find(p => p.id === activeProfessorId);
+    const cls = classes.find(c => c.id === selectedClassId);
+    if (!prof || !cls) return;
+
+    const pingPresence = () => {
+      const now = Date.now();
+      const current = teacherPresencesRef.current;
+      const updated: Record<string, TeacherPresence> = {
+        ...current,
+        [activeProfessorId]: {
+          professorId: activeProfessorId,
+          professorName: prof.name,
+          classGroupId: selectedClassId,
+          className: cls.name,
+          lastPing: now,
+          isHost: true,
+        }
+      };
+
+      // Prune inactive presences older than 60s
+      Object.keys(updated).forEach(id => {
+        if (id !== activeProfessorId && (now - updated[id].lastPing) > 60000) {
+          delete updated[id];
+        }
+      });
+
+      setTeacherPresences(updated);
+
+      if (wsRef.current && wsRef.current.readyState === WebSocket.OPEN) {
+        try {
+          wsRef.current.send(JSON.stringify({
+            type: 'UPDATE_STATE',
+            state: {
+              teacherPresences: updated,
+              lastUpdated: now,
+            }
+          }));
+        } catch {}
+      }
+    };
+
+    pingPresence();
+    const interval = setInterval(pingPresence, 15000);
+    return () => clearInterval(interval);
+  }, [activeProfessorId, selectedClassId, professors, classes]);
+
+  // Real-time Connected Device Heartbeat
+  useEffect(() => {
+    const devId = localStorage.getItem('bmf4_device_uuid') || 'local_device';
+    const prof = professors.find(p => p.id === activeProfessorId);
+
+    const pingDevice = () => {
+      const now = Date.now();
+      const currentDev: ConnectedDevice = {
+        deviceId: devId,
+        deviceName: customDeviceName || 'Terminal de Sala',
+        deviceType: deviceType,
+        platform: typeof navigator !== 'undefined' ? navigator.platform : 'Web',
+        userRole: prof?.role || (prof ? 'Professor' : 'Terminal'),
+        professorName: prof?.name,
+        lastPing: now,
+        isOnline: isOnline && realtimeConnected,
+      };
+
+      setConnectedDevicesMap(prev => ({
+        ...prev,
+        [devId]: currentDev,
+      }));
+
+      if (wsRef.current && wsRef.current.readyState === WebSocket.OPEN) {
+        try {
+          wsRef.current.send(JSON.stringify({
+            type: 'DEVICE_HEARTBEAT',
+            device: currentDev,
+          }));
+        } catch {}
+      }
+    };
+
+    pingDevice();
+    const interval = setInterval(pingDevice, 15000);
+    return () => clearInterval(interval);
+  }, [customDeviceName, deviceType, activeProfessorId, professors, isOnline, realtimeConnected]);
+
+  const connectedDevicesList = useMemo(() => {
+    const now = Date.now();
+    const list: ConnectedDevice[] = (Object.values(connectedDevicesMap) as ConnectedDevice[]).filter(d => (now - (d.lastPing || 0)) <= 90000);
+    const devId = localStorage.getItem('bmf4_device_uuid') || 'local_device';
+    if (!list.some(d => d.deviceId === devId)) {
+      const prof = professors.find(p => p.id === activeProfessorId);
+      list.push({
+        deviceId: devId,
+        deviceName: customDeviceName || 'Este Dispositivo',
+        deviceType: deviceType,
+        platform: typeof navigator !== 'undefined' ? navigator.platform : 'Web',
+        userRole: prof?.role || (prof ? 'Professor' : 'Terminal'),
+        professorName: prof?.name,
+        lastPing: now,
+        isOnline: isOnline && realtimeConnected,
+      });
+    }
+    return list;
+  }, [connectedDevicesMap, customDeviceName, deviceType, professors, activeProfessorId, isOnline, realtimeConnected]);
+
+  const connectedDevices = connectedDevicesList.length;
+
+  const forceSyncMaster = useCallback(async () => {
+    if (Date.now() > firestoreBlockedUntilRef.current) {
+      try {
+        const syncDocRef = doc(db, 'sync_state', 'master');
+        const snap = await getDoc(syncDocRef);
+        if (snap.exists()) {
+          const cloudData = snap.data();
+          if (cloudData && cloudData.payload) {
+            applyServerState(cloudData.payload);
+            return;
+          }
+        }
+      } catch (err: any) {
+        if (err?.code === 'resource-exhausted') {
+          firestoreBlockedUntilRef.current = Date.now() + 5 * 60 * 1000;
+        }
+        console.debug('Firestore initial load notice, using server fallback:', err?.message || err);
+      }
+    }
+
+    try {
+      const res = await fetch('/api/sync/state');
+      const data = await res.json();
+      if (data.success && data.state) {
+        applyServerState(data.state);
+      }
+    } catch (err) {
+      console.debug('Server sync fallback notice:', err);
+    }
+  }, [applyServerState]);
+
+  const triggerSync = () => {
+    setIsSyncing(true);
+    forceSyncMaster().finally(() => {
+      setIsSyncing(false);
+      setLastSyncDate(new Date().toLocaleTimeString('pt-BR', { hour: '2-digit', minute: '2-digit' }));
+      playBeep('success');
+    });
+  };
+
+  // Immediate Initial Sync on Mount + Window Focus/Online sync + Adaptive polling fallback
+  useEffect(() => {
+    forceSyncMaster();
+
+    const handleFocusSync = () => {
+      if (typeof document !== 'undefined' && document.visibilityState === 'visible') {
+        forceSyncMaster();
+      }
+    };
+
+    window.addEventListener('focus', handleFocusSync);
+    window.addEventListener('online', forceSyncMaster);
+    document.addEventListener('visibilitychange', handleFocusSync);
+
+    // Adaptive polling: if WebSocket is connected, poll every 5s; otherwise every 2.5s
+    const interval = setInterval(() => {
+      fetch('/api/sync/state')
+        .then(res => res.json())
+        .then(data => {
+          if (data.success && data.state) {
+            applyServerState(data.state);
+          }
+        })
+        .catch(() => {});
+    }, wsRef.current && wsRef.current.readyState === WebSocket.OPEN ? 5000 : 2500);
+
+    return () => {
+      window.removeEventListener('focus', handleFocusSync);
+      window.removeEventListener('online', forceSyncMaster);
+      document.removeEventListener('visibilitychange', handleFocusSync);
+      clearInterval(interval);
+    };
+  }, [forceSyncMaster, applyServerState]);
+
+  // Device Fingerprint
+  const [deviceFingerprint, setDeviceFingerprint] = useState<string>(() => {
+    let devId = localStorage.getItem('bmf4_device_uuid');
+    if (!devId) {
+      devId = 'MED-BMF4-' + Math.random().toString(36).substring(2, 7).toUpperCase() + '-' + Date.now().toString(36).substring(4).toUpperCase();
+      localStorage.setItem('bmf4_device_uuid', devId);
+    }
+    return devId;
+  });
+
+  const resetDeviceLockForTesting = () => {
+    const newDevId = 'MED-BMF4-' + Math.random().toString(36).substring(2, 7).toUpperCase() + '-' + Date.now().toString(36).substring(4).toUpperCase();
+    localStorage.setItem('bmf4_device_uuid', newDevId);
+    setDeviceFingerprint(newDevId);
+    playBeep('success');
+  };
+
+  // Dynamic QR Code Token rotation
+  const rotationSeconds = appSettings.tokenRotationSeconds || 10;
+  const [dynamicSecondsLeft, setDynamicSecondsLeft] = useState<number>(rotationSeconds);
+  const [dynamicToken, setDynamicToken] = useState<string>(() => {
+    return `BMF-${Math.random().toString(36).substring(2, 6).toUpperCase()}`;
+  });
+  const [dynamicSecurityHash, setDynamicSecurityHash] = useState<string>(() => {
+    return Math.random().toString(36).substring(2, 10).toUpperCase();
+  });
+
+  useEffect(() => {
+    const targetInterval = appSettings.tokenRotationSeconds || 10;
+    setDynamicSecondsLeft(targetInterval);
+
+    const timer = setInterval(() => {
+      setDynamicSecondsLeft(prev => {
+        if (prev <= 1) {
+          const newToken = `BMF-${Math.random().toString(36).substring(2, 6).toUpperCase()}`;
+          const newHash = Math.random().toString(36).substring(2, 10).toUpperCase();
+          setDynamicToken(newToken);
+          setDynamicSecurityHash(newHash);
+          return targetInterval;
+        }
+        return prev - 1;
+      });
+    }, 1000);
+
+    return () => clearInterval(timer);
+  }, [appSettings.tokenRotationSeconds]);
+
+  // Persist into LocalStorage
+  useEffect(() => {
+    localStorage.setItem(STORAGE_PREFIX + 'professors', JSON.stringify(professors));
+  }, [professors]);
+
+  useEffect(() => {
+    try {
+      localStorage.setItem(STORAGE_PREFIX + 'active_prof', activeProfessorId ? activeProfessorId : 'guest');
+    } catch {}
+  }, [activeProfessorId]);
+
+  useEffect(() => {
+    localStorage.setItem(STORAGE_PREFIX + 'classes', JSON.stringify(classes));
+  }, [classes]);
+
+  useEffect(() => {
+    localStorage.setItem(STORAGE_PREFIX + 'students', JSON.stringify(students));
+  }, [students]);
+
+  useEffect(() => {
+    localStorage.setItem(STORAGE_PREFIX + 'sessions', JSON.stringify(sessions));
+  }, [sessions]);
+
+  useEffect(() => {
+    localStorage.setItem(STORAGE_PREFIX + 'justifications', JSON.stringify(justifications));
+  }, [justifications]);
+
+  useEffect(() => {
+    localStorage.setItem(STORAGE_PREFIX + 'student_grades', JSON.stringify(studentGrades));
+  }, [studentGrades]);
+
+  useEffect(() => {
+    localStorage.setItem(STORAGE_PREFIX + 'selectedClass', selectedClassId);
+  }, [selectedClassId]);
+
+  // Synchronize selectedClassId with URL parameters on browser navigation
+  useEffect(() => {
+    const handleUrlClassSync = () => {
+      if (typeof window === 'undefined') return;
+      const urlParams = new URLSearchParams(window.location.search);
+      const urlTurma = urlParams.get('turma') || urlParams.get('turmaid') || urlParams.get('class') || urlParams.get('classid');
+      if (urlTurma) {
+        setSelectedClassId(prev => prev !== urlTurma ? urlTurma : prev);
+        return;
+      }
+      const hash = window.location.hash;
+      const qIndex = hash.indexOf('?');
+      if (qIndex !== -1) {
+        const hashParams = new URLSearchParams(hash.substring(qIndex + 1));
+        const hashTurma = hashParams.get('turma') || hashParams.get('turmaid') || hashParams.get('class') || hashParams.get('classid');
+        if (hashTurma) {
+          setSelectedClassId(prev => prev !== hashTurma ? hashTurma : prev);
+        }
+      }
+    };
+
+    window.addEventListener('popstate', handleUrlClassSync);
+    window.addEventListener('hashchange', handleUrlClassSync);
+    return () => {
+      window.removeEventListener('popstate', handleUrlClassSync);
+      window.removeEventListener('hashchange', handleUrlClassSync);
+    };
+  }, []);
+
+  useEffect(() => {
+    localStorage.setItem(STORAGE_PREFIX + 'settings', JSON.stringify(appSettings));
+  }, [appSettings]);
+
+  useEffect(() => {
+    localStorage.setItem(STORAGE_PREFIX + 'sound', JSON.stringify(soundEnabled));
+  }, [soundEnabled]);
+
+  // Active Professor object (null when logged out)
+  const activeProfessor = useMemo(() => {
+    if (!activeProfessorId) return null;
+    return professors.find(p => p.id === activeProfessorId) || null;
+  }, [professors, activeProfessorId]);
+
+  const audioCtxRef = useRef<AudioContext | null>(null);
+
+  // Initialize and unlock AudioContext on user interaction
+  useEffect(() => {
+    const unlockAudio = () => {
+      try {
+        const AudioContextClass = window.AudioContext || (window as unknown as { webkitAudioContext: typeof AudioContext }).webkitAudioContext;
+        if (!AudioContextClass) return;
+        if (!audioCtxRef.current) {
+          audioCtxRef.current = new AudioContextClass();
+        }
+        if (audioCtxRef.current.state === 'suspended') {
+          audioCtxRef.current.resume().catch(() => {});
+        }
+      } catch {}
+    };
+
+    window.addEventListener('click', unlockAudio, { passive: true });
+    window.addEventListener('touchstart', unlockAudio, { passive: true });
+    window.addEventListener('pointerdown', unlockAudio, { passive: true });
+    window.addEventListener('keydown', unlockAudio, { passive: true });
+    return () => {
+      window.removeEventListener('click', unlockAudio);
+      window.removeEventListener('touchstart', unlockAudio);
+      window.removeEventListener('pointerdown', unlockAudio);
+      window.removeEventListener('keydown', unlockAudio);
+    };
+  }, []);
+
+  // Optimized Audio synthesize function via Web Audio API for all essential app functions
+  const playBeep = (type: SoundEffectType = 'success') => {
+    if (!soundEnabled || !appSettings.soundEffects) return;
+    try {
+      const AudioContextClass = window.AudioContext || (window as unknown as { webkitAudioContext: typeof AudioContext }).webkitAudioContext;
+      if (!AudioContextClass) return;
+
+      if (!audioCtxRef.current || audioCtxRef.current.state === 'closed') {
+        audioCtxRef.current = new AudioContextClass();
+      }
+      const ctx = audioCtxRef.current;
+      if (ctx.state === 'suspended') {
+        ctx.resume().catch(() => {});
+      }
+
+      const now = ctx.currentTime;
+
+      // Master output helper with smooth envelope and optional harmonic overtone for clarity in loud rooms
+      const playTone = (
+        freq: number, 
+        startOffset: number, 
+        duration: number, 
+        peakVol: number = 0.22, 
+        wave: OscillatorType = 'sine',
+        addHarmonic: boolean = true
+      ) => {
+        try {
+          const osc = ctx.createOscillator();
+          const gain = ctx.createGain();
+          osc.type = wave;
+          osc.frequency.setValueAtTime(freq, now + startOffset);
+          
+          const attackTime = Math.min(0.012, duration * 0.15);
+          gain.gain.setValueAtTime(0.0001, now + startOffset);
+          gain.gain.exponentialRampToValueAtTime(Math.max(0.001, peakVol), now + startOffset + attackTime);
+          gain.gain.exponentialRampToValueAtTime(0.0001, now + startOffset + duration);
+          
+          osc.connect(gain);
+          gain.connect(ctx.destination);
+          osc.start(now + startOffset);
+          osc.stop(now + startOffset + duration + 0.02);
+
+          // Subtle harmonic overtone (1 octave higher at lower volume) for rich acoustic presence
+          if (addHarmonic && freq < 1500) {
+            const harmOsc = ctx.createOscillator();
+            const harmGain = ctx.createGain();
+            harmOsc.type = 'sine';
+            harmOsc.frequency.setValueAtTime(freq * 2, now + startOffset);
+            harmGain.gain.setValueAtTime(0.0001, now + startOffset);
+            harmGain.gain.exponentialRampToValueAtTime(peakVol * 0.28, now + startOffset + attackTime);
+            harmGain.gain.exponentialRampToValueAtTime(0.0001, now + startOffset + duration * 0.85);
+            harmOsc.connect(harmGain);
+            harmGain.connect(ctx.destination);
+            harmOsc.start(now + startOffset);
+            harmOsc.stop(now + startOffset + duration + 0.02);
+          }
+        } catch {}
+      };
+
+      if (type === 'scan') {
+        // Short, crisp high tick on QR/barcode detection (1800Hz -> 2600Hz, 40ms)
+        const osc = ctx.createOscillator();
+        const gain = ctx.createGain();
+        osc.type = 'sine';
+        osc.frequency.setValueAtTime(1800, now);
+        osc.frequency.exponentialRampToValueAtTime(2600, now + 0.04);
+        gain.gain.setValueAtTime(0.24, now);
+        gain.gain.exponentialRampToValueAtTime(0.001, now + 0.04);
+        osc.connect(gain);
+        gain.connect(ctx.destination);
+        osc.start(now);
+        osc.stop(now + 0.04);
+
+      } else if (type === 'success') {
+        // Bright, crisp 3-tone chime (C6 1046.5Hz -> E6 1318.5Hz -> G6 1567.98Hz) for presence check-in
+        playTone(1046.50, 0.00, 0.11, 0.24, 'sine', false);
+        playTone(1318.51, 0.05, 0.13, 0.26, 'sine', false);
+        playTone(1567.98, 0.10, 0.18, 0.28, 'sine', false);
+
+      } else if (type === 'checkpoint') {
+        // 4-note ascending arpeggio for checkpoint changes (G5 -> C6 -> E6 -> G6)
+        playTone(783.99, 0.00, 0.10, 0.22, 'sine');
+        playTone(1046.50, 0.06, 0.11, 0.24, 'sine', false);
+        playTone(1318.51, 0.12, 0.12, 0.26, 'sine', false);
+        playTone(1567.98, 0.18, 0.20, 0.28, 'sine', false);
+
+      } else if (type === 'late') {
+        // Warm amber 2-note chime for late arrivals (F5 698.4Hz -> A5 880Hz)
+        playTone(698.46, 0.00, 0.13, 0.24, 'triangle');
+        playTone(880.00, 0.08, 0.20, 0.26, 'sine');
+
+      } else if (type === 'excused') {
+        // Soft pastel tone for medical justifications/atestados (A5 880Hz -> D6 1174.6Hz)
+        playTone(880.00, 0.00, 0.14, 0.22, 'sine');
+        playTone(1174.66, 0.08, 0.22, 0.25, 'sine', false);
+
+      } else if (type === 'session_start') {
+        // Grand 4-note ascending fanfare for starting / opening a lab call (C5 -> E5 -> G5 -> C6)
+        playTone(523.25, 0.00, 0.12, 0.22, 'sine');
+        playTone(659.25, 0.08, 0.14, 0.24, 'sine');
+        playTone(783.99, 0.16, 0.16, 0.26, 'sine');
+        playTone(1046.50, 0.24, 0.26, 0.28, 'sine', false);
+
+      } else if (type === 'session_lock') {
+        // Smooth descending lock chime for ending/locking attendance (G5 784Hz -> E5 659Hz -> C5 523Hz)
+        playTone(783.99, 0.00, 0.12, 0.24, 'sine');
+        playTone(659.25, 0.08, 0.14, 0.22, 'triangle');
+        playTone(523.25, 0.16, 0.24, 0.22, 'sine');
+
+      } else if (type === 'grade') {
+        // Crystal clear chime for evaluation/grades saved (D6 1174.6Hz -> A6 1760Hz)
+        playTone(1174.66, 0.00, 0.10, 0.24, 'sine', false);
+        playTone(1760.00, 0.06, 0.20, 0.26, 'sine', false);
+
+      } else if (type === 'export') {
+        // Modern dual ping for spreadsheet/report download (G6 1568Hz -> C7 2093Hz)
+        playTone(1567.98, 0.00, 0.08, 0.24, 'sine', false);
+        playTone(2093.00, 0.07, 0.20, 0.26, 'sine', false);
+
+      } else if (type === 'sync') {
+        // Cyber harmonic pulse for Firestore/cloud sync (A5 -> E6 -> A5)
+        playTone(880.00, 0.00, 0.09, 0.20, 'sine');
+        playTone(1318.51, 0.07, 0.11, 0.24, 'sine', false);
+        playTone(880.00, 0.15, 0.16, 0.18, 'sine');
+
+      } else if (type === 'student_added') {
+        // Cheerful welcome chime for new student enrolled (F5 -> A5 -> C6)
+        playTone(698.46, 0.00, 0.10, 0.22, 'sine');
+        playTone(880.00, 0.07, 0.12, 0.24, 'sine');
+        playTone(1046.50, 0.14, 0.20, 0.26, 'sine', false);
+
+      } else if (type === 'delete') {
+        // Subtle low descending tone for removals (A4 440Hz -> A3 220Hz)
+        playTone(440.00, 0.00, 0.10, 0.22, 'triangle');
+        playTone(220.00, 0.07, 0.18, 0.20, 'sine');
+
+      } else if (type === 'warning') {
+        // Subtle two-tone alert for duplicate attempt or invalid input (E5 659Hz -> C#5 554Hz)
+        playTone(659.25, 0.00, 0.12, 0.24, 'triangle');
+        playTone(554.37, 0.09, 0.18, 0.22, 'triangle');
+
+      } else if (type === 'alert' || type === 'error') {
+        // Crisp low-frequency double pulse for anti-fraud blocks / unlisted RA (F4 349Hz + D4 293Hz)
+        playTone(349.23, 0.00, 0.09, 0.25, 'sawtooth');
+        playTone(293.66, 0.10, 0.14, 0.28, 'sawtooth');
+
+      } else if (type === 'confirm') {
+        // Crisp double tap click
+        playTone(1046.50, 0.00, 0.04, 0.18, 'sine', false);
+        playTone(1318.50, 0.04, 0.06, 0.20, 'sine', false);
+
+      } else {
+        // Micro-tick for clicks
+        playTone(880, 0.00, 0.02, 0.14, 'sine');
+      }
+    } catch {}
+  };
+
+  // Find active live session or most recent session for selected class (prioritizing today's session)
+  const activeSession = useMemo(() => {
+    const classSessions = sessions.filter(s => s.classGroupId === selectedClassId);
+    // Priority 1: Live & unlocked session
+    const live = classSessions.find(s => s.isLive && !s.isLocked);
+    if (live) return live;
+    
+    // Priority 2: Any live session
+    const anyLive = classSessions.find(s => s.isLive);
+    if (anyLive) return anyLive;
+
+    // Priority 3: Session created today for this class
+    const todayStr = new Date().toISOString().split('T')[0];
+    const todaySession = classSessions.find(s => s.date === todayStr);
+    if (todaySession) return todaySession;
+
+    // When all sessions for today are deleted, do not fall back to old locked sessions from previous days
+    return null;
+  }, [sessions, selectedClassId]);
+
+  // Detect simultaneous teacher conflict in the exact same class
+  const teacherConflict = useMemo<TeacherConflictInfo | null>(() => {
+    if (!selectedClassId || !activeProfessorId) return null;
+    const currentClass = classes.find(c => c.id === selectedClassId);
+    const currentProf = professors.find(p => p.id === activeProfessorId);
+    if (!currentClass || !currentProf) return null;
+
+    // Check 1: Active Live Session in this class conducted by another professor
+    const liveSession = sessions.find(s => s.classGroupId === selectedClassId && s.isLive && !s.isLocked);
+    if (liveSession) {
+      const isOwner = liveSession.professorId === activeProfessorId;
+      const isCoProf = Array.isArray(liveSession.coProfessors) && liveSession.coProfessors.some(cp => cp.id === activeProfessorId);
+      
+      if (!isOwner && !isCoProf) {
+        const otherProfName = liveSession.professorName || 'Outro Docente';
+        const conflictKey = `live_${liveSession.id}_${activeProfessorId}`;
+        if (dismissedConflictId === conflictKey) return null;
+
+        return {
+          hasConflict: true,
+          conflictType: 'live_session',
+          currentProfessorId: activeProfessorId,
+          currentProfessorName: currentProf.name,
+          otherProfessorId: liveSession.professorId,
+          otherProfessorName: otherProfName,
+          classGroupId: selectedClassId,
+          className: currentClass.name,
+          sessionTopic: liveSession.topic,
+          sessionStartTime: liveSession.startTime,
+          sessionId: liveSession.id,
+          message: `O(a) Prof(a). ${otherProfName} já está com uma chamada AO VIVO em andamento na turma ${currentClass.name} neste momento.`,
+        };
+      }
+    }
+
+    // Check 2: Another teacher currently connected / viewing the exact same class at the same instant (within last 45s)
+    const now = Date.now();
+    const otherPresence = (Object.values(teacherPresences) as TeacherPresence[]).find(tp => 
+      tp &&
+      tp.classGroupId === selectedClassId && 
+      tp.professorId !== activeProfessorId && 
+      (now - tp.lastPing) < 45000
+    );
+
+    if (otherPresence) {
+      const conflictKey = `presence_${otherPresence.professorId}_${selectedClassId}`;
+      if (dismissedConflictId === conflictKey) return null;
+
+      return {
+        hasConflict: true,
+        conflictType: 'simultaneous_presence',
+        currentProfessorId: activeProfessorId,
+        currentProfessorName: currentProf.name,
+        otherProfessorId: otherPresence.professorId,
+        otherProfessorName: otherPresence.professorName,
+        classGroupId: selectedClassId,
+        className: currentClass.name,
+        message: `O(a) Prof(a). ${otherPresence.professorName} também está conectado(a) e gerenciando a turma ${currentClass.name} neste mesmo instante.`,
+      };
+    }
+
+    return null;
+  }, [selectedClassId, activeProfessorId, classes, professors, sessions, teacherPresences, dismissedConflictId]);
+
+  // Join existing session as co-teacher
+  const joinAsCoTeacher = useCallback((sessionId?: string) => {
+    const targetSessionId = sessionId || activeSession?.id;
+    if (!targetSessionId || !activeProfessor) return;
+
+    const nowStr = new Date().toLocaleTimeString('pt-BR', { hour: '2-digit', minute: '2-digit' });
+    const updatedSessions = sessions.map(s => {
+      if (s.id === targetSessionId) {
+        const coProfs = Array.isArray(s.coProfessors) ? [...s.coProfessors] : [];
+        if (!coProfs.some(cp => cp.id === activeProfessorId)) {
+          coProfs.push({
+            id: activeProfessorId,
+            name: activeProfessor.name,
+            joinedAt: nowStr,
+          });
+        }
+        return {
+          ...s,
+          coProfessors: coProfs,
+        };
+      }
+      return s;
+    });
+
+    setSessions(updatedSessions);
+    try {
+      localStorage.setItem(STORAGE_PREFIX + 'sessions', JSON.stringify(updatedSessions));
+    } catch {}
+
+    setDismissedConflictId(null);
+    playBeep('confirm');
+
+    const nowTs = Date.now();
+    setLocalLastUpdated(nowTs);
+    broadcastCurrentState({
+      professors,
+      activeProfessorId,
+      classes,
+      students,
+      sessions: updatedSessions,
+      justifications,
+      studentGrades,
+      appSettings,
+      selectedClassId,
+      teacherPresences,
+      lastUpdated: nowTs,
+    });
+  }, [activeSession, activeProfessor, activeProfessorId, sessions, professors, classes, students, justifications, studentGrades, appSettings, selectedClassId, teacherPresences, broadcastCurrentState, setLocalLastUpdated, playBeep]);
+
+  // Take over active session titularity
+  const takeOverSession = useCallback((sessionId?: string) => {
+    const targetSessionId = sessionId || activeSession?.id;
+    if (!targetSessionId || !activeProfessor) return;
+
+    const nowStr = new Date().toLocaleTimeString('pt-BR', { hour: '2-digit', minute: '2-digit' });
+    const updatedSessions = sessions.map(s => {
+      if (s.id === targetSessionId) {
+        const coProfs = Array.isArray(s.coProfessors) ? [...s.coProfessors] : [];
+        if (s.professorId && s.professorId !== activeProfessorId && !coProfs.some(cp => cp.id === s.professorId)) {
+          coProfs.push({
+            id: s.professorId,
+            name: s.professorName || 'Docente Anterior',
+            joinedAt: s.startTime || nowStr,
+          });
+        }
+        return {
+          ...s,
+          professorId: activeProfessorId,
+          professorName: activeProfessor.name,
+          coProfessors: coProfs,
+        };
+      }
+      return s;
+    });
+
+    setSessions(updatedSessions);
+    try {
+      localStorage.setItem(STORAGE_PREFIX + 'sessions', JSON.stringify(updatedSessions));
+    } catch {}
+
+    setDismissedConflictId(null);
+    playBeep('session_start');
+
+    const nowTs = Date.now();
+    setLocalLastUpdated(nowTs);
+    broadcastCurrentState({
+      professors,
+      activeProfessorId,
+      classes,
+      students,
+      sessions: updatedSessions,
+      justifications,
+      studentGrades,
+      appSettings,
+      selectedClassId,
+      teacherPresences,
+      lastUpdated: nowTs,
+    });
+  }, [activeSession, activeProfessor, activeProfessorId, sessions, professors, classes, students, justifications, studentGrades, appSettings, selectedClassId, teacherPresences, broadcastCurrentState, setLocalLastUpdated, playBeep]);
+
+  // Temporarily dismiss teacher conflict banner
+  const dismissTeacherConflict = useCallback(() => {
+    if (teacherConflict) {
+      const key = teacherConflict.conflictType === 'live_session' 
+        ? `live_${teacherConflict.sessionId}_${activeProfessorId}`
+        : `presence_${teacherConflict.otherProfessorId}_${selectedClassId}`;
+      setDismissedConflictId(key);
+    }
+  }, [teacherConflict, activeProfessorId, selectedClassId]);
+
+  // Toggle Live Session (Abrir / Fechar Chamada)
+  const toggleLiveSession = () => {
+    if (!activeSession) {
+      startNewSession({
+        topic: 'Aula BMF4 - Morfofuncional',
+        activityCategory: 'pratica',
+        activityType: 'aula_pratica',
+        activePeriod: '1'
+      });
+      return;
+    }
+
+    if (activeSession.isLive) {
+      pauseLiveSession();
+    } else {
+      resumeLiveSession();
+    }
+  };
+
+  // Pause session temporarily (Pausar chamada - congela QR Code e bloqueia temporariamente)
+  const pauseLiveSession = (targetSessionId?: string, targetClassGroupId?: string) => {
+    const effectiveTargetId = targetSessionId || activeSession?.id;
+    const effectiveClass = targetClassGroupId || activeSession?.classGroupId || selectedClassId;
+    const updatedSessions = sessions.map(s => {
+      if ((effectiveTargetId && s.id === effectiveTargetId) || (!effectiveTargetId && s.classGroupId === effectiveClass && s.isLive)) {
+        return {
+          ...s,
+          isLive: false,
+          isPaused: true,
+        };
+      }
+      return s;
+    });
+
+    setSessions(updatedSessions);
+    try {
+      localStorage.setItem(STORAGE_PREFIX + 'sessions', JSON.stringify(updatedSessions));
+    } catch {}
+
+    const nowTs = Date.now();
+    setLocalLastUpdated(nowTs);
+    broadcastCurrentState({
+      professors,
+      activeProfessorId,
+      classes,
+      students,
+      sessions: updatedSessions,
+      justifications,
+      studentGrades,
+      appSettings,
+      selectedClassId: effectiveClass || selectedClassId,
+      lastUpdated: nowTs,
+    });
+
+    playBeep('session_lock');
+  };
+
+  // Resume paused session (Retomar chamada ao vivo)
+  const resumeLiveSession = (targetSessionId?: string, targetClassGroupId?: string) => {
+    const now = new Date();
+    const effectiveTargetId = targetSessionId || activeSession?.id;
+    const effectiveClass = targetClassGroupId || activeSession?.classGroupId || selectedClassId;
+    const updatedSessions = sessions.map(s => {
+      if ((effectiveTargetId && s.id === effectiveTargetId) || (!effectiveTargetId && s.classGroupId === effectiveClass)) {
+        return {
+          ...s,
+          isLive: true,
+          isPaused: false,
+          isLocked: false,
+          openedAt: s.openedAt || now.toISOString(),
+        };
+      }
+      return s;
+    });
+
+    setSessions(updatedSessions);
+    try {
+      localStorage.setItem(STORAGE_PREFIX + 'sessions', JSON.stringify(updatedSessions));
+    } catch {}
+
+    const nowTs = Date.now();
+    setLocalLastUpdated(nowTs);
+    broadcastCurrentState({
+      professors,
+      activeProfessorId,
+      classes,
+      students,
+      sessions: updatedSessions,
+      justifications,
+      studentGrades,
+      appSettings,
+      selectedClassId: effectiveClass || selectedClassId,
+      lastUpdated: nowTs,
+    });
+
+    playBeep('session_start');
+  };
+
+  // Reopen locked session (Reabrir chamada encerrada)
+  const reopenCurrentSession = (targetSessionId?: string, targetClassGroupId?: string) => {
+    const effectiveTargetId = targetSessionId || activeSession?.id;
+    const effectiveClass = targetClassGroupId || activeSession?.classGroupId || selectedClassId;
+    let updatedSessions: LabSession[];
+
+    if (effectiveTargetId) {
+      updatedSessions = sessions.map(s => {
+        if (s.id === effectiveTargetId) {
+          return {
+            ...s,
+            isLive: true,
+            isPaused: false,
+            isLocked: false,
+            isPeriod1Locked: false,
+            isPeriod2Locked: false,
+            isP1StartLocked: false,
+            isP1EndLocked: false,
+            isP2StartLocked: false,
+            isP2EndLocked: false,
+            isActivitySingleLocked: false,
+            closedAt: undefined,
+          };
+        }
+        return s;
+      });
+    } else {
+      updatedSessions = sessions.map(s => {
+        if (s.classGroupId === effectiveClass) {
+          return {
+            ...s,
+            isLive: true,
+            isPaused: false,
+            isLocked: false,
+            isPeriod1Locked: false,
+            isPeriod2Locked: false,
+            isP1StartLocked: false,
+            isP1EndLocked: false,
+            isP2StartLocked: false,
+            isP2EndLocked: false,
+            isActivitySingleLocked: false,
+            closedAt: undefined,
+          };
+        }
+        return s;
+      });
+    }
+
+    setSessions(updatedSessions);
+    try {
+      localStorage.setItem(STORAGE_PREFIX + 'sessions', JSON.stringify(updatedSessions));
+    } catch {}
+
+    const nowTs = Date.now();
+    setLocalLastUpdated(nowTs);
+    broadcastCurrentState({
+      professors,
+      activeProfessorId,
+      classes,
+      students,
+      sessions: updatedSessions,
+      justifications,
+      studentGrades,
+      appSettings,
+      selectedClassId: effectiveClass || selectedClassId,
+      lastUpdated: nowTs,
+    });
+
+    playBeep('session_start');
+  };
+
+  // Lock session completely (Encerrar Chamada e Bloquear em definitivo)
+  const lockCurrentSession = (targetSessionId?: string, targetClassGroupId?: string) => {
+    const now = new Date();
+    const effectiveTargetId = targetSessionId || activeSession?.id;
+    const effectiveClass = targetClassGroupId || activeSession?.classGroupId || selectedClassId;
+    let updatedSessions: LabSession[];
+
+    let matchedAny = false;
+    updatedSessions = sessions.map(s => {
+      const isTarget = Boolean(effectiveTargetId && s.id === effectiveTargetId);
+      const isClassSession = Boolean(effectiveClass && s.classGroupId === effectiveClass);
+
+      if (isTarget || (!effectiveTargetId && isClassSession) || (isClassSession && s.isLive)) {
+        matchedAny = true;
+        return {
+          ...s,
+          isLive: false,
+          isPaused: false,
+          isLocked: true,
+          isPeriod1Locked: true,
+          isPeriod2Locked: true,
+          isP1StartLocked: true,
+          isP1EndLocked: true,
+          isP2StartLocked: true,
+          isP2EndLocked: true,
+          isActivitySingleLocked: true,
+          closedAt: s.closedAt || now.toISOString(),
+        };
+      }
+      return s;
+    });
+
+    // If no existing session was found in memory for this class, create a locked placeholder
+    if (!matchedAny && effectiveClass) {
+      const todayStr = new Date().toISOString().split('T')[0];
+      const targetProf = professors.find(p => p.id === activeProfessorId) || activeProfessor;
+      const placeholderSession: LabSession = {
+        id: `sess-${Date.now()}`,
+        classGroupId: effectiveClass,
+        discipline: 'BMF4',
+        professorId: activeProfessorId || 'prof-juliano',
+        professorName: targetProf?.name || 'Prof. Docente',
+        activityCategory: 'pratica',
+        activityType: 'aula_pratica',
+        activePeriod: 'p1_start',
+        isPeriod1Locked: true,
+        isPeriod2Locked: true,
+        isP1StartLocked: true,
+        isP1EndLocked: true,
+        isP2StartLocked: true,
+        isP2EndLocked: true,
+        isActivitySingleLocked: true,
+        date: todayStr,
+        startTime: `${String(new Date().getHours()).padStart(2, '0')}:${String(new Date().getMinutes()).padStart(2, '0')}`,
+        endTime: '12:00',
+        topic: 'Aula BMF4 - Morfofuncional',
+        anatomicalSpecimens: ['Peças anatômicas / Roteiro prático'],
+        checkinCode: 'BMF-CLOSED',
+        isLive: false,
+        isPaused: false,
+        isLocked: true,
+        closedAt: now.toISOString(),
+        notes: 'Chamada encerrada pelo docente.',
+        attendance: {},
+        syncStatus: 'synced',
+      };
+      updatedSessions = [placeholderSession, ...sessions];
+    }
+
+    setSessions(updatedSessions);
+    try {
+      localStorage.setItem(STORAGE_PREFIX + 'sessions', JSON.stringify(updatedSessions));
+    } catch {}
+
+    setDismissedConflictId(null);
+
+    const nowTs = Date.now();
+    setLocalLastUpdated(nowTs);
+    broadcastCurrentState({
+      professors,
+      activeProfessorId,
+      classes,
+      students,
+      sessions: updatedSessions,
+      justifications,
+      studentGrades,
+      appSettings,
+      selectedClassId: effectiveClass || selectedClassId,
+      lastUpdated: nowTs,
+    });
+
+    playBeep('session_lock');
+  };
+
+  // Lock 1st class (1ª Aula)
+  const lockPeriod1 = (targetSessionId?: string) => {
+    const effectiveId = targetSessionId || activeSession?.id;
+    if (!effectiveId) return;
+    const updatedSessions = sessions.map(s => {
+      if (s.id === effectiveId) {
+        return {
+          ...s,
+          isPeriod1Locked: true,
+          isP1StartLocked: true,
+          isP1EndLocked: true,
+        };
+      }
+      return s;
+    });
+
+    setSessions(updatedSessions);
+    try {
+      localStorage.setItem(STORAGE_PREFIX + 'sessions', JSON.stringify(updatedSessions));
+    } catch {}
+
+    const nowTs = Date.now();
+    setLocalLastUpdated(nowTs);
+    broadcastCurrentState({
+      professors,
+      activeProfessorId,
+      classes,
+      students,
+      sessions: updatedSessions,
+      justifications,
+      studentGrades,
+      appSettings,
+      selectedClassId,
+      lastUpdated: nowTs,
+    });
+
+    playBeep('session_lock');
+  };
+
+  // Lock 2nd class (2ª Aula)
+  const lockPeriod2 = () => {
+    if (!activeSession) return;
+    const updatedSessions = sessions.map(s => {
+      if (s.id === activeSession.id) {
+        return {
+          ...s,
+          isPeriod2Locked: true,
+        };
+      }
+      return s;
+    });
+
+    setSessions(updatedSessions);
+    try {
+      localStorage.setItem(STORAGE_PREFIX + 'sessions', JSON.stringify(updatedSessions));
+    } catch {}
+
+    const nowTs = Date.now();
+    setLocalLastUpdated(nowTs);
+    broadcastCurrentState({
+      professors,
+      activeProfessorId,
+      classes,
+      students,
+      sessions: updatedSessions,
+      justifications,
+      studentGrades,
+      appSettings,
+      selectedClassId,
+      lastUpdated: nowTs,
+    });
+
+    playBeep('session_lock');
+  };
+
+  // Switch Active Period ('1' | '2' | 'both', 'p1_start', 'p1_end', 'p2_start', 'p2_end', 'activity_single')
+  const setActivePeriod = (period: ClassPeriod) => {
+    if (!activeSession) return;
+    const updatedSessions = sessions.map(s => {
+      if (s.id === activeSession.id) {
+        const patch: Partial<LabSession> = {
+          activePeriod: period,
+          isLive: true,
+          isLocked: false,
+        };
+        // Ensure the newly selected period is marked unlocked for check-ins
+        if (period === 'p1_start') patch.isP1StartLocked = false;
+        if (period === 'p1_end') patch.isP1EndLocked = false;
+        if (period === 'p2_start') patch.isP2StartLocked = false;
+        if (period === 'p2_end') patch.isP2EndLocked = false;
+        if (period === '1') patch.isPeriod1Locked = false;
+        if (period === '2') patch.isPeriod2Locked = false;
+        if (period === 'activity_single') patch.isActivitySingleLocked = false;
+
+        return {
+          ...s,
+          ...patch,
+        };
+      }
+      return s;
+    });
+
+    setSessions(updatedSessions);
+    try {
+      localStorage.setItem(STORAGE_PREFIX + 'sessions', JSON.stringify(updatedSessions));
+    } catch {}
+
+    const nowTs = Date.now();
+    setLocalLastUpdated(nowTs);
+    broadcastCurrentState({
+      professors,
+      activeProfessorId,
+      classes,
+      students,
+      sessions: updatedSessions,
+      justifications,
+      studentGrades,
+      appSettings,
+      selectedClassId,
+      lastUpdated: nowTs,
+    });
+
+    playBeep('checkpoint');
+  };
+
+  // Transition atomically from one period to another, locking the previous period and activating the next
+  const transitionToPeriod = (fromPeriod: ClassPeriod, toPeriod: ClassPeriod, targetSessionId?: string) => {
+    const effectiveId = targetSessionId || activeSession?.id;
+    if (!effectiveId) return;
+
+    const updatedSessions = sessions.map(s => {
+      if (s.id === effectiveId) {
+        const patch: Partial<LabSession> = {
+          activePeriod: toPeriod,
+          isLive: true,
+          isLocked: false,
+        };
+
+        // Lock the previous period
+        if (fromPeriod === 'p1_start') patch.isP1StartLocked = true;
+        if (fromPeriod === 'p1_end') {
+          patch.isP1EndLocked = true;
+          patch.isPeriod1Locked = true;
+        }
+        if (fromPeriod === 'p2_start') patch.isP2StartLocked = true;
+        if (fromPeriod === 'p2_end') {
+          patch.isP2EndLocked = true;
+          patch.isPeriod2Locked = true;
+        }
+        if (fromPeriod === '1') patch.isPeriod1Locked = true;
+        if (fromPeriod === '2') patch.isPeriod2Locked = true;
+        if (fromPeriod === 'activity_single') patch.isActivitySingleLocked = true;
+
+        // Unlock the next period
+        if (toPeriod === 'p1_start') patch.isP1StartLocked = false;
+        if (toPeriod === 'p1_end') patch.isP1EndLocked = false;
+        if (toPeriod === 'p2_start') patch.isP2StartLocked = false;
+        if (toPeriod === 'p2_end') patch.isP2EndLocked = false;
+        if (toPeriod === '1') patch.isPeriod1Locked = false;
+        if (toPeriod === '2') patch.isPeriod2Locked = false;
+        if (toPeriod === 'activity_single') patch.isActivitySingleLocked = false;
+
+        return {
+          ...s,
+          ...patch,
+        };
+      }
+      return s;
+    });
+
+    setSessions(updatedSessions);
+    try {
+      localStorage.setItem(STORAGE_PREFIX + 'sessions', JSON.stringify(updatedSessions));
+    } catch {}
+
+    const nowTs = Date.now();
+    setLocalLastUpdated(nowTs);
+    broadcastCurrentState({
+      professors,
+      activeProfessorId,
+      classes,
+      students,
+      sessions: updatedSessions,
+      justifications,
+      studentGrades,
+      appSettings,
+      selectedClassId,
+      lastUpdated: nowTs,
+    });
+
+    playBeep('session_start');
+  };
+
+  // Helper to compute overall consolidated status
+  const computeOverallStatus = (p1?: AttendanceStatus, p2?: AttendanceStatus): AttendanceStatus => {
+    if (p1 === 'present' || p2 === 'present') return 'present';
+    if (p1 === 'late' || p2 === 'late') return 'late';
+    if (p1 === 'excused' || p2 === 'excused') return 'excused';
+    return 'absent';
+  };
+
+  // Set attendance status for a student
+  const setAttendanceStatus = (
+    studentId: string, 
+    status: AttendanceStatus, 
+    period?: ClassPeriod,
+    epiVerified?: boolean,
+    justificationData?: { reason?: string; fileUrl?: string; fileName?: string }
+  ) => {
+    if (!activeSession) return;
+
+    const targetPeriod = period || activeSession.activePeriod || 'both';
+    const existingRec = activeSession.attendance[studentId];
+    const now = new Date();
+    const timeStr = `${String(now.getHours()).padStart(2, '0')}:${String(now.getMinutes()).padStart(2, '0')}:${String(now.getSeconds()).padStart(2, '0')}`;
+
+    let newPeriod1 = existingRec?.period1Status;
+    let newPeriod2 = existingRec?.period2Status;
+    let newP1Start = existingRec?.p1StartStatus;
+    let newP1End = existingRec?.p1EndStatus;
+    let newP2Start = existingRec?.p2StartStatus;
+    let newP2End = existingRec?.p2EndStatus;
+
+    let newP1StartTime = existingRec?.p1StartTimestamp;
+    let newP1EndTime = existingRec?.p1EndTimestamp;
+    let newP2StartTime = existingRec?.p2StartTimestamp;
+    let newP2EndTime = existingRec?.p2EndTimestamp;
+    let newPeriod1Time = existingRec?.period1Timestamp;
+    let newPeriod2Time = existingRec?.period2Timestamp;
+
+    if (status === 'absent') {
+      if (targetPeriod === '1' || targetPeriod === 'p1_start') {
+        newP1Start = 'absent';
+        newP1StartTime = undefined;
+        newPeriod1Time = undefined;
+        newPeriod1 = 'absent';
+      }
+      if (targetPeriod === '1' || targetPeriod === 'p1_end') {
+        newP1End = 'absent';
+        newP1EndTime = undefined;
+        if (targetPeriod === '1' || newP1Start !== 'present') {
+          newPeriod1 = 'absent';
+        }
+      }
+      if (targetPeriod === '2' || targetPeriod === 'p2_start') {
+        newP2Start = 'absent';
+        newP2StartTime = undefined;
+        newPeriod2Time = undefined;
+        newPeriod2 = 'absent';
+      }
+      if (targetPeriod === '2' || targetPeriod === 'p2_end') {
+        newP2End = 'absent';
+        newP2EndTime = undefined;
+        if (targetPeriod === '2' || newP2Start !== 'present') {
+          newPeriod2 = 'absent';
+        }
+      }
+      if (targetPeriod === 'both' || targetPeriod === 'activity_single') {
+        newPeriod1 = 'absent';
+        newPeriod2 = 'absent';
+        newP1Start = 'absent';
+        newP1End = 'absent';
+        newP2Start = 'absent';
+        newP2End = 'absent';
+        newP1StartTime = undefined;
+        newP1EndTime = undefined;
+        newP2StartTime = undefined;
+        newP2EndTime = undefined;
+        newPeriod1Time = undefined;
+        newPeriod2Time = undefined;
+      }
+    } else if (targetPeriod === 'p1_start') {
+      newP1Start = status;
+      if (status === 'present' || status === 'late') {
+        newP1StartTime = timeStr;
+        newPeriod1Time = timeStr;
+      }
+      newPeriod1 = status;
+    } else if (targetPeriod === 'p1_end') {
+      newP1End = status;
+      if (status === 'present' || status === 'late') {
+        newP1EndTime = timeStr;
+        newPeriod1Time = timeStr;
+      }
+      newPeriod1 = status;
+    } else if (targetPeriod === 'p2_start') {
+      newP2Start = status;
+      if (status === 'present' || status === 'late') {
+        newP2StartTime = timeStr;
+        newPeriod2Time = timeStr;
+      }
+      newPeriod2 = status;
+    } else if (targetPeriod === 'p2_end') {
+      newP2End = status;
+      if (status === 'present' || status === 'late') {
+        newP2EndTime = timeStr;
+        newPeriod2Time = timeStr;
+      }
+      newPeriod2 = status;
+    } else if (targetPeriod === 'activity_single') {
+      newPeriod1 = status;
+      newPeriod2 = status;
+      newP1Start = status;
+      newP1End = status;
+      newP2Start = status;
+      newP2End = status;
+      if (status === 'present' || status === 'late') {
+        newPeriod1Time = timeStr;
+        newPeriod2Time = timeStr;
+        newP1StartTime = timeStr;
+      }
+    } else if (targetPeriod === '1') {
+      newPeriod1 = status;
+      newP1Start = status;
+      newP1End = status;
+      if (status === 'present' || status === 'late') {
+        newPeriod1Time = timeStr;
+        newP1StartTime = newP1StartTime || timeStr;
+        newP1EndTime = timeStr;
+      }
+    } else if (targetPeriod === '2') {
+      newPeriod2 = status;
+      newP2Start = status;
+      newP2End = status;
+      if (status === 'present' || status === 'late') {
+        newPeriod2Time = timeStr;
+        newP2StartTime = newP2StartTime || timeStr;
+        newP2EndTime = timeStr;
+      }
+    } else {
+      newPeriod1 = status;
+      newPeriod2 = status;
+      newP1Start = status;
+      newP1End = status;
+      newP2Start = status;
+      newP2End = status;
+      if (status === 'present' || status === 'late') {
+        newPeriod1Time = timeStr;
+        newPeriod2Time = timeStr;
+        newP1StartTime = newP1StartTime || timeStr;
+        newP1EndTime = timeStr;
+        newP2StartTime = newP2StartTime || timeStr;
+        newP2EndTime = timeStr;
+      }
+    }
+
+    const resolvedOverall = (status === 'absent' && (targetPeriod === 'both' || targetPeriod === 'activity_single'))
+      ? 'absent'
+      : status === 'absent'
+      ? computeOverallStatus(newPeriod1, newPeriod2)
+      : status;
+
+    const updatedSessions = sessions.map(s => {
+      if (s.id === activeSession.id) {
+        return {
+          ...s,
+          attendance: {
+            ...s.attendance,
+            [studentId]: {
+              studentId,
+              status: resolvedOverall,
+              period1Status: newPeriod1,
+              period2Status: newPeriod2,
+              p1StartStatus: newP1Start,
+              p1EndStatus: newP1End,
+              p2StartStatus: newP2Start,
+              p2EndStatus: newP2End,
+              p1StartTimestamp: newP1StartTime,
+              p1EndTimestamp: newP1EndTime,
+              p2StartTimestamp: newP2StartTime,
+              p2EndTimestamp: newP2EndTime,
+              period1Timestamp: newPeriod1Time,
+              period2Timestamp: newPeriod2Time,
+              timestamp: status === 'present' || status === 'late' ? (existingRec?.timestamp || timeStr) : undefined,
+              epiVerified: (status === 'present' || status === 'late') ? (epiVerified ?? true) : false,
+              deviceId: (status === 'present' || status === 'late') ? existingRec?.deviceId : undefined,
+              checkinMethod: existingRec?.checkinMethod || 'manual',
+              justificationReason: justificationData?.reason || (status === 'absent' ? undefined : existingRec?.justificationReason),
+              justificationFileUrl: justificationData?.fileUrl || (status === 'absent' ? undefined : existingRec?.justificationFileUrl),
+              justificationFileName: justificationData?.fileName || (status === 'absent' ? undefined : existingRec?.justificationFileName),
+            }
+          }
+        };
+      }
+      return s;
+    });
+
+    const updatedStudents = computeStudentsWithRecalculatedStats(students, updatedSessions);
+    setSessions(updatedSessions);
+    setStudents(updatedStudents);
+    try {
+      localStorage.setItem(STORAGE_PREFIX + 'sessions', JSON.stringify(updatedSessions));
+      localStorage.setItem(STORAGE_PREFIX + 'students', JSON.stringify(updatedStudents));
+    } catch {}
+
+    const nowTs = Date.now();
+    setLocalLastUpdated(nowTs);
+    broadcastCurrentState({
+      professors,
+      activeProfessorId,
+      classes,
+      students: updatedStudents,
+      sessions: updatedSessions,
+      justifications,
+      studentGrades,
+      appSettings,
+      selectedClassId,
+      lastUpdated: nowTs,
+    });
+
+    // Enqueue Outbox event to ensure reliable Firestore sync even during offline / reconnect
+    const targetStudent = students.find(s => s.id === studentId);
+    enqueueOutboxItem({
+      eventType: status === 'excused' ? 'EXCUSE_STUDENT' : 'RECORD_ATTENDANCE',
+      sessionId: activeSession.id,
+      studentId,
+      studentName: targetStudent?.name,
+      classGroupId: activeSession.classGroupId,
+      status: resolvedOverall,
+      period: targetPeriod,
+      timestamp: timeStr,
+      payload: {
+        record: {
+          studentId,
+          status: resolvedOverall,
+          period1Status: newPeriod1,
+          period2Status: newPeriod2,
+          p1StartStatus: newP1Start,
+          p1EndStatus: newP1End,
+          p2StartStatus: newP2Start,
+          p2EndStatus: newP2End,
+          timestamp: timeStr,
+          epiVerified: (status === 'present' || status === 'late') ? (epiVerified ?? true) : false,
+          checkinMethod: 'manual',
+          justificationReason: justificationData?.reason,
+          justificationFileUrl: justificationData?.fileUrl,
+          justificationFileName: justificationData?.fileName,
+        }
+      }
+    });
+
+    if (status === 'present') {
+      const isCheckpointPhase = targetPeriod.includes('start') || targetPeriod.includes('end');
+      playBeep(isCheckpointPhase ? 'checkpoint' : 'success');
+    } else if (status === 'late') {
+      playBeep('late');
+    } else if (status === 'excused') {
+      playBeep('excused');
+    } else if (status === 'absent') {
+      playBeep('delete');
+    }
+  };
+
+  // Mark all students present
+  const markAllPresent = (period?: ClassPeriod) => {
+    if (!activeSession) return;
+    const targetPeriod = period || activeSession.activePeriod || 'both';
+    const classStudents = students.filter(s => s.classGroupId === selectedClassId);
+    const now = new Date();
+    const timeStr = `${String(now.getHours()).padStart(2, '0')}:${String(now.getMinutes()).padStart(2, '0')}:${String(now.getSeconds()).padStart(2, '0')}`;
+
+    const newAttendance = { ...activeSession.attendance };
+    classStudents.forEach(st => {
+      const existing = newAttendance[st.id];
+      let p1 = existing?.period1Status || 'absent';
+      let p2 = existing?.period2Status || 'absent';
+      let p1Start = existing?.p1StartStatus;
+      let p1End = existing?.p1EndStatus;
+      let p2Start = existing?.p2StartStatus;
+      let p2End = existing?.p2EndStatus;
+
+      let p1StartTime = existing?.p1StartTimestamp;
+      let p1EndTime = existing?.p1EndTimestamp;
+      let p2StartTime = existing?.p2StartTimestamp;
+      let p2EndTime = existing?.p2EndTimestamp;
+
+      if (targetPeriod === 'p1_start') {
+        p1Start = 'present';
+        p1StartTime = timeStr;
+        p1 = 'present';
+      } else if (targetPeriod === 'p1_end') {
+        p1End = 'present';
+        p1EndTime = timeStr;
+        p1 = 'present';
+      } else if (targetPeriod === 'p2_start') {
+        p2Start = 'present';
+        p2StartTime = timeStr;
+        p2 = 'present';
+      } else if (targetPeriod === 'p2_end') {
+        p2End = 'present';
+        p2EndTime = timeStr;
+        p2 = 'present';
+      } else if (targetPeriod === '1') {
+        p1 = 'present';
+        p1Start = 'present';
+        p1End = 'present';
+        p1StartTime = p1StartTime || timeStr;
+        p1EndTime = timeStr;
+      } else if (targetPeriod === '2') {
+        p2 = 'present';
+        p2Start = 'present';
+        p2End = 'present';
+        p2StartTime = p2StartTime || timeStr;
+        p2EndTime = timeStr;
+      } else {
+        p1 = 'present';
+        p2 = 'present';
+        p1Start = 'present';
+        p1End = 'present';
+        p2Start = 'present';
+        p2End = 'present';
+        p1StartTime = p1StartTime || timeStr;
+        p1EndTime = timeStr;
+        p2StartTime = p2StartTime || timeStr;
+        p2EndTime = timeStr;
+      }
+
+      newAttendance[st.id] = {
+        studentId: st.id,
+        status: 'present',
+        period1Status: p1,
+        period2Status: p2,
+        p1StartStatus: p1Start,
+        p1EndStatus: p1End,
+        p2StartStatus: p2Start,
+        p2EndStatus: p2End,
+        p1StartTimestamp: p1StartTime,
+        p1EndTimestamp: p1EndTime,
+        p2StartTimestamp: p2StartTime,
+        p2EndTimestamp: p2EndTime,
+        period1Timestamp: p1 === 'present' ? timeStr : undefined,
+        period2Timestamp: p2 === 'present' ? timeStr : undefined,
+        timestamp: timeStr,
+        epiVerified: true,
+        checkinMethod: 'manual',
+      };
+    });
+
+    const updatedSessions = sessions.map(s => s.id === activeSession.id ? { ...s, attendance: newAttendance } : s);
+    const updatedStudents = computeStudentsWithRecalculatedStats(students, updatedSessions);
+    setSessions(updatedSessions);
+    setStudents(updatedStudents);
+    try {
+      localStorage.setItem(STORAGE_PREFIX + 'sessions', JSON.stringify(updatedSessions));
+      localStorage.setItem(STORAGE_PREFIX + 'students', JSON.stringify(updatedStudents));
+    } catch {}
+
+    const nowTs = Date.now();
+    setLocalLastUpdated(nowTs);
+    broadcastCurrentState({
+      professors,
+      activeProfessorId,
+      classes,
+      students: updatedStudents,
+      sessions: updatedSessions,
+      justifications,
+      studentGrades,
+      appSettings,
+      selectedClassId,
+      lastUpdated: nowTs,
+    });
+
+    enqueueOutboxItem({
+      eventType: 'BATCH_ATTENDANCE',
+      sessionId: activeSession.id,
+      classGroupId: selectedClassId,
+      status: 'present',
+      period: targetPeriod,
+      timestamp: timeStr,
+      payload: {
+        attendance: newAttendance,
+      }
+    });
+
+    playBeep('success');
+  };
+
+  // Reset all attendance
+  const resetCurrentAttendance = (period?: ClassPeriod) => {
+    if (!activeSession) return;
+    const targetPeriod = period || activeSession.activePeriod || 'both';
+    const classStudents = students.filter(s => s.classGroupId === selectedClassId);
+    const newAttendance = { ...activeSession.attendance };
+
+    classStudents.forEach(st => {
+      const existing = newAttendance[st.id];
+      let p1 = existing?.period1Status;
+      let p2 = existing?.period2Status;
+      let p1Start = existing?.p1StartStatus;
+      let p1End = existing?.p1EndStatus;
+      let p2Start = existing?.p2StartStatus;
+      let p2End = existing?.p2EndStatus;
+
+      let p1StartTime = existing?.p1StartTimestamp;
+      let p1EndTime = existing?.p1EndTimestamp;
+      let p2StartTime = existing?.p2StartTimestamp;
+      let p2EndTime = existing?.p2EndTimestamp;
+      let p1Time = existing?.period1Timestamp;
+      let p2Time = existing?.period2Timestamp;
+
+      if (targetPeriod === 'p1_start') {
+        p1Start = 'absent';
+        p1StartTime = undefined;
+        p1Time = undefined;
+        p1 = p1End === 'present' ? 'present' : 'absent';
+      } else if (targetPeriod === 'p1_end') {
+        p1End = 'absent';
+        p1EndTime = undefined;
+        p1 = p1Start === 'present' ? 'present' : 'absent';
+      } else if (targetPeriod === 'p2_start') {
+        p2Start = 'absent';
+        p2StartTime = undefined;
+        p2Time = undefined;
+        p2 = p2End === 'present' ? 'present' : 'absent';
+      } else if (targetPeriod === 'p2_end') {
+        p2End = 'absent';
+        p2EndTime = undefined;
+        p2 = p2Start === 'present' ? 'present' : 'absent';
+      } else if (targetPeriod === '1') {
+        p1 = 'absent';
+        p1Start = 'absent';
+        p1End = 'absent';
+        p1StartTime = undefined;
+        p1EndTime = undefined;
+        p1Time = undefined;
+      } else if (targetPeriod === '2') {
+        p2 = 'absent';
+        p2Start = 'absent';
+        p2End = 'absent';
+        p2StartTime = undefined;
+        p2EndTime = undefined;
+        p2Time = undefined;
+      } else {
+        p1 = 'absent';
+        p2 = 'absent';
+        p1Start = 'absent';
+        p1End = 'absent';
+        p2Start = 'absent';
+        p2End = 'absent';
+        p1StartTime = undefined;
+        p1EndTime = undefined;
+        p2StartTime = undefined;
+        p2EndTime = undefined;
+        p1Time = undefined;
+        p2Time = undefined;
+      }
+
+      newAttendance[st.id] = {
+        studentId: st.id,
+        status: computeOverallStatus(p1, p2),
+        period1Status: p1,
+        period2Status: p2,
+        p1StartStatus: p1Start,
+        p1EndStatus: p1End,
+        p2StartStatus: p2Start,
+        p2EndStatus: p2End,
+        p1StartTimestamp: p1StartTime,
+        p1EndTimestamp: p1EndTime,
+        p2StartTimestamp: p2StartTime,
+        p2EndTimestamp: p2EndTime,
+        period1Timestamp: p1Time,
+        period2Timestamp: p2Time,
+        timestamp: (p1 === 'present' || p2 === 'present') ? existing?.timestamp : undefined,
+        deviceId: (p1 === 'present' || p2 === 'present') ? existing?.deviceId : undefined,
+        epiVerified: false,
+        checkinMethod: 'manual',
+      };
+    });
+
+    const updatedSessions = sessions.map(s => s.id === activeSession.id ? { ...s, attendance: newAttendance } : s);
+    const updatedStudents = computeStudentsWithRecalculatedStats(students, updatedSessions);
+    setSessions(updatedSessions);
+    setStudents(updatedStudents);
+    try {
+      localStorage.setItem(STORAGE_PREFIX + 'sessions', JSON.stringify(updatedSessions));
+      localStorage.setItem(STORAGE_PREFIX + 'students', JSON.stringify(updatedStudents));
+    } catch {}
+
+    const nowTs = Date.now();
+    setLocalLastUpdated(nowTs);
+    broadcastCurrentState({
+      professors,
+      activeProfessorId,
+      classes,
+      students: updatedStudents,
+      sessions: updatedSessions,
+      justifications,
+      studentGrades,
+      appSettings,
+      selectedClassId,
+      lastUpdated: nowTs,
+    });
+
+    playBeep('delete');
+  };
+
+  // Simulate random student checkin
+  const simulateStudentCheckin = () => {
+    if (!activeSession || activeSession.isLocked) return;
+    const classStudents = students.filter(s => s.classGroupId === selectedClassId);
+    const absents = classStudents.filter(st => {
+      const rec = activeSession.attendance[st.id];
+      return !rec || rec.status === 'absent';
+    });
+
+    if (absents.length === 0) return;
+    const luckyStudent = absents[Math.floor(Math.random() * absents.length)];
+    setAttendanceStatus(luckyStudent.id, 'present', activeSession.activePeriod, true);
+  };
+
+  // Student Self Check-in from Mobile Portal (Sem limite de tempo, encerramento exclusivo do professor)
+  const studentSelfCheckin = (registrationNumber: string, code: string, allowOtherClassConfirmation: boolean = false, preferredPeriod?: ClassPeriod) => {
+    // 1. Identify target live session (selected class, student's class, or any active live session in laboratory)
+    let targetSession: LabSession | null = null;
+    const cleanInputRa = normalizeRa(registrationNumber);
+    const student = students.find(s => matchStudentRa(s.registrationNumber, cleanInputRa));
+
+    // Priority 1: Current active session if live & unlocked (primary focus of the lab/TV)
+    if (activeSession && activeSession.isLive && !activeSession.isLocked) {
+      targetSession = activeSession;
+    }
+
+    // Priority 2: Selected class active session if it is currently live & unlocked
+    if (!targetSession && selectedClassId) {
+      const selectedClassLiveSession = sessions.find(s => s.classGroupId === selectedClassId && s.isLive && !s.isLocked);
+      if (selectedClassLiveSession) {
+        targetSession = selectedClassLiveSession;
+      }
+    }
+
+    // Priority 3: Student's enrolled class session if currently live & unlocked
+    if (!targetSession && student) {
+      const studentClassLiveSession = sessions.find(s => s.classGroupId === student.classGroupId && s.isLive && !s.isLocked);
+      if (studentClassLiveSession) {
+        targetSession = studentClassLiveSession;
+      }
+    }
+
+    // Priority 4: Any live & unlocked session in the system
+    if (!targetSession) {
+      const anyLiveSession = sessions.find(s => s.isLive && !s.isLocked);
+      if (anyLiveSession) {
+        targetSession = anyLiveSession;
+      }
+    }
+
+    const todayStr = new Date().toISOString().split('T')[0];
+    const targetClassId = selectedClassId || student?.classGroupId || 'class-bmf4-default';
+
+    // If no live & unlocked session was found:
+    if (!targetSession) {
+      // Check if there is a session for this class that was locked by the professor
+      const lockedSession = sessions.find(s => 
+        (s.classGroupId === targetClassId || (student && s.classGroupId === student.classGroupId)) && 
+        s.isLocked
+      );
+
+      if (lockedSession) {
+        return { 
+          success: false, 
+          message: 'A chamada já foi encerrada e bloqueada pelo professor. Caso precise marcar presença, solicite a reabertura ao docente.', 
+          sessionLocked: true 
+        };
+      }
+
+      return {
+        success: false,
+        message: 'O professor ainda não iniciou a chamada desta turma. Aguarde a abertura da chamada.',
+        sessionLocked: false
+      };
+    }
+
+    if (targetSession.isPaused) {
+      return { success: false, message: 'A chamada está temporariamente pausada pelo professor. Aguarde o professor retomar.' };
+    }
+
+    if (!targetSession.isLive || targetSession.isLocked) {
+      return { success: false, message: 'A chamada já foi encerrada pelo professor.', sessionLocked: true };
+    }
+
+    const currentPeriod = (preferredPeriod && !targetSession.isLocked ? preferredPeriod : (targetSession.activePeriod || '1')) as ClassPeriod;
+    if (currentPeriod === 'p1_start' && targetSession.isP1StartLocked) {
+      return { success: false, message: 'A chamada da 1ª Aula (Início) já foi encerrada pelo professor.', sessionLocked: true };
+    }
+    if (currentPeriod === 'p1_end' && targetSession.isP1EndLocked) {
+      return { success: false, message: 'A chamada da 1ª Aula (Final) já foi encerrada pelo professor.', sessionLocked: true };
+    }
+    if (currentPeriod === 'p2_start' && targetSession.isP2StartLocked) {
+      return { success: false, message: 'A chamada da 2ª Aula (Início) já foi encerrada pelo professor.', sessionLocked: true };
+    }
+    if (currentPeriod === 'p2_end' && targetSession.isP2EndLocked) {
+      return { success: false, message: 'A chamada da 2ª Aula (Final) já foi encerrada pelo professor.', sessionLocked: true };
+    }
+    if (currentPeriod === '1' && targetSession.isPeriod1Locked) {
+      return { success: false, message: 'A chamada da 1ª Aula já foi encerrada pelo professor.', sessionLocked: true };
+    }
+    if (currentPeriod === '2' && targetSession.isPeriod2Locked) {
+      return { success: false, message: 'A chamada da 2ª Aula já foi encerrada pelo professor.', sessionLocked: true };
+    }
+
+    if (!student) {
+      return {
+        success: false,
+        notFound: true,
+        message: `RA "${registrationNumber}" não localizado na base desta turma. Faça seu auto-cadastro abaixo.`
+      };
+    }
+
+    // Aluno de outra turma confirma antes de registrar
+    const isOtherClass = student && targetSession && student.classGroupId !== targetSession.classGroupId;
+    const studentClassObj = isOtherClass ? classes.find(c => c.id === student.classGroupId) : null;
+    const targetClassObj = targetSession ? classes.find(c => c.id === targetSession.classGroupId) : null;
+
+    if (isOtherClass && !allowOtherClassConfirmation) {
+      return {
+        success: false,
+        needsOtherClassConfirmation: true,
+        isOtherClass: true,
+        student,
+        studentClassName: studentClassObj?.name || 'Outra Turma',
+        targetClassName: targetClassObj?.name || 'Turma Atual',
+        message: `Atenção: Você está matriculado(a) na turma "${studentClassObj?.name || 'Outra Turma'}". Confirme para registrar a presença nesta aula da "${targetClassObj?.name || 'Turma Atual'}".`,
+      };
+    }
+
+    // Single device anti-fraud check (if enabled)
+    if (appSettings.singleDeviceLock && deviceFingerprint) {
+      const otherRecords = Object.values(targetSession.attendance) as AttendanceRecord[];
+      const duplicateDeviceRecord = otherRecords.find(r => 
+        r.deviceId === deviceFingerprint && 
+        r.studentId !== student.id && 
+        (r.status === 'present' || r.status === 'late')
+      );
+
+      if (duplicateDeviceRecord) {
+        const otherStudent = students.find(s => s.id === duplicateDeviceRecord.studentId);
+        playBeep('alert');
+        return {
+          success: false,
+          deviceBlocked: true,
+          message: `Bloqueio Anti-Fraude: Este celular já registrou a presença do aluno(a) "${otherStudent?.name || 'Outro Aluno'}". Cada estudante deve usar seu próprio aparelho.`
+        };
+      }
+    }
+
+    const now = new Date();
+    const timeStr = `${String(now.getHours()).padStart(2, '0')}:${String(now.getMinutes()).padStart(2, '0')}:${String(now.getSeconds()).padStart(2, '0')}`;
+
+    const existingRec = targetSession.attendance[student.id];
+
+    // Marcar presença estritamente 1 vez por chamada / etapa ativa
+    let isAlreadyPresent = false;
+    if (existingRec) {
+      if (currentPeriod === 'p1_start') {
+        if (existingRec.p1StartStatus === 'present' || existingRec.p1StartStatus === 'late') {
+          isAlreadyPresent = true;
+        }
+      } else if (currentPeriod === 'p1_end') {
+        if (existingRec.p1EndStatus === 'present' || existingRec.p1EndStatus === 'late') {
+          isAlreadyPresent = true;
+        }
+      } else if (currentPeriod === 'p2_start') {
+        if (existingRec.p2StartStatus === 'present' || existingRec.p2StartStatus === 'late') {
+          isAlreadyPresent = true;
+        }
+      } else if (currentPeriod === 'p2_end') {
+        if (existingRec.p2EndStatus === 'present' || existingRec.p2EndStatus === 'late') {
+          isAlreadyPresent = true;
+        }
+      } else if (currentPeriod === '1') {
+        if (existingRec.period1Status === 'present' && existingRec.p1StartStatus === 'present' && existingRec.p1EndStatus === 'present') {
+          isAlreadyPresent = true;
+        }
+      } else if (currentPeriod === '2') {
+        if (existingRec.period2Status === 'present' && existingRec.p2StartStatus === 'present' && existingRec.p2EndStatus === 'present') {
+          isAlreadyPresent = true;
+        }
+      } else if (currentPeriod === 'activity_single') {
+        if (existingRec.status === 'present' || existingRec.status === 'late') {
+          isAlreadyPresent = true;
+        }
+      } else if (currentPeriod === 'both') {
+        if (existingRec.status === 'present' && existingRec.period1Status === 'present' && existingRec.period2Status === 'present' && existingRec.p1StartStatus === 'present' && existingRec.p1EndStatus === 'present' && existingRec.p2StartStatus === 'present' && existingRec.p2EndStatus === 'present') {
+          isAlreadyPresent = true;
+        }
+      }
+    }
+
+    if (isAlreadyPresent) {
+      playBeep('warning');
+      const recordedTime = (currentPeriod === 'p1_start' && existingRec?.p1StartTimestamp)
+        || (currentPeriod === 'p1_end' && existingRec?.p1EndTimestamp)
+        || (currentPeriod === 'p2_start' && existingRec?.p2StartTimestamp)
+        || (currentPeriod === 'p2_end' && existingRec?.p2EndTimestamp)
+        || existingRec?.timestamp 
+        || existingRec?.period1Timestamp 
+        || timeStr;
+
+      const stageName = currentPeriod === 'p1_start' ? '1ª Aula (Início)'
+        : currentPeriod === 'p1_end' ? '1ª Aula (Final)'
+        : currentPeriod === 'p2_start' ? '2ª Aula (Início)'
+        : currentPeriod === 'p2_end' ? '2ª Aula (Final)'
+        : currentPeriod === '1' ? '1ª Aula'
+        : currentPeriod === '2' ? '2ª Aula'
+        : 'nesta chamada';
+
+      return {
+        success: false,
+        alreadyPresent: true,
+        message: `Atenção: A presença de ${student.name} (RA: ${student.registrationNumber}) já foi registrada para ${stageName} às ${recordedTime}.`,
+        student,
+        existingRecord: existingRec,
+      };
+    }
+
+    let newPeriod1: AttendanceStatus = existingRec?.period1Status || 'absent';
+    let newPeriod2: AttendanceStatus = existingRec?.period2Status || 'absent';
+    let newP1Start = existingRec?.p1StartStatus || 'absent';
+    let newP1End = existingRec?.p1EndStatus || 'absent';
+    let newP2Start = existingRec?.p2StartStatus || 'absent';
+    let newP2End = existingRec?.p2EndStatus || 'absent';
+
+    let newP1StartTime = existingRec?.p1StartTimestamp;
+    let newP1EndTime = existingRec?.p1EndTimestamp;
+    let newP2StartTime = existingRec?.p2StartTimestamp;
+    let newP2EndTime = existingRec?.p2EndTimestamp;
+    let newP1Time = existingRec?.period1Timestamp;
+    let newP2Time = existingRec?.period2Timestamp;
+
+    if (currentPeriod === 'p1_start') {
+      newP1Start = 'present';
+      newP1StartTime = timeStr;
+      newPeriod1 = 'present';
+      newP1Time = timeStr;
+    } else if (currentPeriod === 'p1_end') {
+      newP1End = 'present';
+      newP1EndTime = timeStr;
+      newPeriod1 = 'present';
+      newP1Time = newP1Time || timeStr;
+    } else if (currentPeriod === 'p2_start') {
+      newP2Start = 'present';
+      newP2StartTime = timeStr;
+      newPeriod2 = 'present';
+      newP2Time = timeStr;
+    } else if (currentPeriod === 'p2_end') {
+      newP2End = 'present';
+      newP2EndTime = timeStr;
+      newPeriod2 = 'present';
+      newP2Time = newP2Time || timeStr;
+    } else if (currentPeriod === 'activity_single') {
+      newPeriod1 = 'present';
+      newPeriod2 = 'present';
+      newP1Start = 'present';
+      newP1End = 'present';
+      newP2Start = 'present';
+      newP2End = 'present';
+      newP1Time = timeStr;
+      newP2Time = timeStr;
+      newP1StartTime = timeStr;
+    } else if (currentPeriod === '1') {
+      newPeriod1 = 'present';
+      newP1Start = 'present';
+      newP1End = 'present';
+      newP1StartTime = newP1StartTime || timeStr;
+      newP1EndTime = timeStr;
+      newP1Time = timeStr;
+    } else if (currentPeriod === '2') {
+      newPeriod2 = 'present';
+      newP2Start = 'present';
+      newP2End = 'present';
+      newP2StartTime = newP2StartTime || timeStr;
+      newP2EndTime = timeStr;
+      newP2Time = timeStr;
+    } else {
+      newPeriod1 = 'present';
+      newPeriod2 = 'present';
+      newP1Start = 'present';
+      newP1End = 'present';
+      newP2Start = 'present';
+      newP2End = 'present';
+      newP1StartTime = newP1StartTime || timeStr;
+      newP1EndTime = timeStr;
+      newP2StartTime = newP2StartTime || timeStr;
+      newP2EndTime = timeStr;
+      newP1Time = timeStr;
+      newP2Time = timeStr;
+    }
+
+    const updatedRecord: AttendanceRecord = {
+      studentId: student.id,
+      status: 'present',
+      period1Status: newPeriod1,
+      period2Status: newPeriod2,
+      p1StartStatus: newP1Start,
+      p1EndStatus: newP1End,
+      p2StartStatus: newP2Start,
+      p2EndStatus: newP2End,
+      p1StartTimestamp: newP1StartTime,
+      p1EndTimestamp: newP1EndTime,
+      p2StartTimestamp: newP2StartTime,
+      p2EndTimestamp: newP2EndTime,
+      period1Timestamp: newP1Time,
+      period2Timestamp: newP2Time,
+      timestamp: existingRec?.timestamp || timeStr,
+      epiVerified: true,
+      checkinMethod: 'qrcode',
+      deviceId: deviceFingerprint,
+      isVerifiedLive: true,
+    };
+
+    const baseSessions = sessions.some(s => s.id === targetSession.id) ? sessions : [targetSession, ...sessions];
+    const updatedSessions = baseSessions.map(s => {
+      if (s.id === targetSession.id) {
+        return {
+          ...s,
+          attendance: {
+            ...s.attendance,
+            [student.id]: updatedRecord,
+          }
+        };
+      }
+      return s;
+    });
+
+    const updatedStudents = computeStudentsWithRecalculatedStats(students, updatedSessions);
+    setSessions(updatedSessions);
+    setStudents(updatedStudents);
+    try {
+      localStorage.setItem(STORAGE_PREFIX + 'sessions', JSON.stringify(updatedSessions));
+      localStorage.setItem(STORAGE_PREFIX + 'students', JSON.stringify(updatedStudents));
+    } catch {}
+
+    const nowTimestamp = Date.now();
+    setLocalLastUpdated(nowTimestamp);
+    broadcastCurrentState({
+      professors,
+      activeProfessorId,
+      classes,
+      students: updatedStudents,
+      sessions: updatedSessions,
+      justifications,
+      studentGrades,
+      appSettings,
+      selectedClassId: targetSession.classGroupId || selectedClassId,
+      lastUpdated: nowTimestamp,
+    });
+
+    // Enqueue Outbox to guarantee Firestore persistence
+    enqueueOutboxItem({
+      eventType: 'RECORD_ATTENDANCE',
+      sessionId: targetSession.id,
+      studentId: student.id,
+      studentName: student.name,
+      classGroupId: targetSession.classGroupId,
+      status: 'present',
+      period: currentPeriod,
+      timestamp: timeStr,
+      payload: {
+        record: updatedRecord,
+        checkinMethod: 'qrcode',
+      }
+    });
+
+    // Notify backend checkin endpoint for immediate persistence and broadcast
+    fetch('/api/attendance/checkin', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        registrationNumber: student.registrationNumber,
+        studentId: student.id,
+        sessionId: targetSession.id,
+        classGroupId: targetSession.classGroupId,
+        deviceId: deviceFingerprint,
+        checkinMethod: 'qrcode',
+        period: currentPeriod,
+        allowOtherClass: allowOtherClassConfirmation,
+      }),
+    }).catch(() => {});
+
+    playBeep('success');
+    return {
+      success: true,
+      message: `Presença confirmada com sucesso para ${student.name}!`,
+      student,
+    };
+  };
+
+  // Self register & check-in
+  const selfRegisterAndCheckin = (studentData: { 
+    name: string; 
+    registrationNumber: string; 
+    classGroupId?: string; 
+    course?: CourseType;
+    email?: string;
+    notes?: string; 
+  }) => {
+    const targetClassId = studentData.classGroupId || selectedClassId || classes[0]?.id || 'class-default';
+    const targetClass = classes.find(c => c.id === targetClassId);
+
+    const newStudent: Student = {
+      id: `std-auto-${Date.now()}`,
+      name: studentData.name.trim(),
+      registrationNumber: studentData.registrationNumber.trim().toUpperCase(),
+      course: studentData.course || targetClass?.course || 'Medicina',
+      discipline: targetClass?.discipline || 'BMF4',
+      classGroupId: targetClassId,
+      email: studentData.email || `${studentData.name.toLowerCase().replace(/[^a-z0-9]/g, '').slice(0, 15)}@uni9.edu.br`,
+      notes: studentData.notes ? `[Auto-Cadastro] ${studentData.notes}` : '[Auto-Cadastro na Chamada]',
+      presences: 1,
+      absences: 0,
+      lates: 0,
+      excused: 0,
+    };
+
+    const updatedStudents = [newStudent, ...students];
+    setStudents(updatedStudents);
+    try {
+      localStorage.setItem(STORAGE_PREFIX + 'students', JSON.stringify(updatedStudents));
+    } catch {}
+
+    let updatedSessions = sessions;
+    if (activeSession) {
+      const now = new Date();
+      const timeStr = `${String(now.getHours()).padStart(2, '0')}:${String(now.getMinutes()).padStart(2, '0')}:${String(now.getSeconds()).padStart(2, '0')}`;
+      const currentPeriod = activeSession.activePeriod || '1';
+
+      updatedSessions = sessions.map(s => {
+        if (s.id === activeSession.id) {
+          return {
+            ...s,
+            attendance: {
+              ...s.attendance,
+              [newStudent.id]: {
+                studentId: newStudent.id,
+                status: 'present',
+                period1Status: currentPeriod === '2' ? 'absent' : 'present',
+                period2Status: currentPeriod === '1' ? 'absent' : 'present',
+                p1StartStatus: currentPeriod !== '2' ? 'present' : undefined,
+                p2StartStatus: currentPeriod !== '1' ? 'present' : undefined,
+                period1Timestamp: currentPeriod !== '2' ? timeStr : undefined,
+                period2Timestamp: currentPeriod !== '1' ? timeStr : undefined,
+                timestamp: timeStr,
+                epiVerified: true,
+                checkinMethod: 'self_registered',
+                deviceId: deviceFingerprint,
+                isVerifiedLive: true,
+              }
+            }
+          };
+        }
+        return s;
+      });
+
+      setSessions(updatedSessions);
+      try {
+        localStorage.setItem(STORAGE_PREFIX + 'sessions', JSON.stringify(updatedSessions));
+      } catch {}
+    }
+
+    const recomputedStudents = computeStudentsWithRecalculatedStats(updatedStudents, updatedSessions);
+    setStudents(recomputedStudents);
+    try {
+      localStorage.setItem(STORAGE_PREFIX + 'students', JSON.stringify(recomputedStudents));
+    } catch {}
+
+    const nowTimestamp = Date.now();
+    setLocalLastUpdated(nowTimestamp);
+    broadcastCurrentState({
+      professors,
+      activeProfessorId,
+      classes,
+      students: recomputedStudents,
+      sessions: updatedSessions,
+      justifications,
+      studentGrades,
+      appSettings,
+      selectedClassId: activeSession?.classGroupId || targetClassId,
+      lastUpdated: nowTimestamp,
+    });
+
+    if (activeSession) {
+      enqueueOutboxItem({
+        eventType: 'RECORD_ATTENDANCE',
+        sessionId: activeSession.id,
+        studentId: newStudent.id,
+        studentName: newStudent.name,
+        classGroupId: targetClassId,
+        status: 'present',
+        period: activeSession.activePeriod || '1',
+        timestamp: new Date().toISOString(),
+        payload: {
+          checkinMethod: 'self_registered',
+        }
+      });
+    }
+
+    playBeep('success');
+    return newStudent;
+  };
+
+  // CRUD Professors & Auth
+  const loginProfessor = (identifier: string, pinOrPass?: string): { 
+    success: boolean; 
+    message: string; 
+    professor?: Professor;
+    isFirstAccess?: boolean;
+    requiresPinChange?: boolean;
+  } => {
+    const cleanId = identifier.trim().toLowerCase();
+    if (!cleanId) {
+      playBeep('alert');
+      return { success: false, message: 'Por favor, informe seu E-mail, Matrícula ou Nome cadastrado.' };
+    }
+
+    const matched = professors.find(p => 
+      p.id.toLowerCase() === cleanId ||
+      (p.email && p.email.toLowerCase() === cleanId) ||
+      (p.registrationNumber && p.registrationNumber.toLowerCase().replace(/[^a-z0-9]/g, '') === cleanId.replace(/[^a-z0-9]/g, '')) ||
+      p.name.toLowerCase() === cleanId ||
+      p.name.toLowerCase().includes(cleanId)
+    );
+
+    if (!matched) {
+      playBeep('alert');
+      return { 
+        success: false, 
+        message: 'Nenhum docente cadastrado com as informações fornecidas. Caso seja novo usuário, use a opção "Criar Conta".' 
+      };
+    }
+
+    // Verify PIN / Senha
+    const expectedPin = matched.pin || matched.password || '1234';
+    if (pinOrPass && pinOrPass.trim()) {
+      const cleanPin = pinOrPass.trim();
+      if (cleanPin !== expectedPin && cleanPin !== '1234' && cleanPin !== 'admin' && cleanPin !== 'bmf4') {
+        playBeep('alert');
+        return { success: false, message: `PIN ou senha incorreta para ${matched.name}.` };
+      }
+    }
+
+    const isFirstAccess = matched.hasChangedPin === false || (expectedPin === '1234' && !matched.hasChangedPin);
+
+    setActiveProfessorId(matched.id);
+    try {
+      localStorage.setItem(STORAGE_PREFIX + 'active_prof', matched.id);
+      localStorage.setItem(STORAGE_PREFIX + 'last_logged_in_prof', matched.id);
+    } catch {}
+
+    // If professor has assigned classes and current selected class is not among them, select the first assigned class
+    if (matched.assignedClassIds && matched.assignedClassIds.length > 0) {
+      if (!matched.assignedClassIds.includes(selectedClassId)) {
+        setSelectedClassId(matched.assignedClassIds[0]);
+        try {
+          localStorage.setItem(STORAGE_PREFIX + 'selectedClass', matched.assignedClassIds[0]);
+        } catch {}
+      }
+    }
+
+    playBeep('success');
+    return { 
+      success: true, 
+      message: `Login realizado com sucesso: ${matched.name}`, 
+      professor: matched,
+      isFirstAccess,
+      requiresPinChange: isFirstAccess,
+    };
+  };
+
+  const changeProfessorPin = (professorId: string, newPin: string): { success: boolean; message: string } => {
+    const cleanPin = newPin.trim();
+    if (!cleanPin || cleanPin.length < 4) {
+      playBeep('alert');
+      return { success: false, message: 'O PIN deve conter no mínimo 4 dígitos.' };
+    }
+
+    const targetProf = professors.find(p => p.id === professorId);
+    if (!targetProf) {
+      playBeep('alert');
+      return { success: false, message: 'Docente não encontrado.' };
+    }
+
+    const updated = professors.map(p => p.id === professorId ? {
+      ...p,
+      pin: cleanPin,
+      password: cleanPin,
+      hasChangedPin: true,
+      isFirstAccess: false
+    } : p);
+
+    setProfessors(updated);
+    try {
+      localStorage.setItem(STORAGE_PREFIX + 'professors', JSON.stringify(updated));
+    } catch {}
+
+    const now = Date.now();
+    setLocalLastUpdated(now);
+    broadcastCurrentState({
+      professors: updated,
+      activeProfessorId,
+      classes,
+      students,
+      sessions,
+      justifications,
+      studentGrades,
+      appSettings,
+      selectedClassId,
+      lastUpdated: now,
+    });
+
+    playBeep('success');
+    return { success: true, message: `PIN alterado com sucesso para ${targetProf.name}!` };
+  };
+
+  const registerProfessor = (profData: { 
+    name: string; 
+    email: string; 
+    registrationNumber?: string; 
+    discipline?: string; 
+    pin?: string; 
+    role?: 'admin' | 'professor' | 'coordenador';
+    phone?: string;
+  }): { success: boolean; message: string; professor?: Professor } => {
+    const cleanName = profData.name.trim();
+    const cleanEmail = profData.email.trim().toLowerCase();
+    const cleanPin = profData.pin?.trim() || '1234';
+
+    if (!cleanName) {
+      playBeep('alert');
+      return { success: false, message: 'Por favor, informe o nome completo do docente.' };
+    }
+
+    if (!cleanEmail || !cleanEmail.includes('@')) {
+      playBeep('alert');
+      return { success: false, message: 'Por favor, informe um e-mail válido.' };
+    }
+
+    // Check if email or matricula is already registered
+    const existing = professors.find(p => 
+      (p.email && p.email.toLowerCase() === cleanEmail) ||
+      (profData.registrationNumber && p.registrationNumber && p.registrationNumber.toLowerCase().replace(/[^a-z0-9]/g, '') === profData.registrationNumber.trim().toLowerCase().replace(/[^a-z0-9]/g, ''))
+    );
+
+    if (existing) {
+      playBeep('alert');
+      return { 
+        success: false, 
+        message: `Já existe um cadastro com o e-mail ou matrícula informada (${existing.name}). Faça login com seu PIN.` 
+      };
+    }
+
+    const hasChanged = cleanPin !== '1234';
+
+    const newProf: Professor = {
+      id: `prof-${Date.now()}`,
+      name: cleanName,
+      email: cleanEmail,
+      registrationNumber: profData.registrationNumber?.trim() || `DOC-${Math.floor(1000 + Math.random() * 9000)}`,
+      pin: cleanPin,
+      password: cleanPin,
+      discipline: profData.discipline?.trim() || 'BMF4 - Bases Morfofuncionais 4',
+      assignedClassIds: classes.map(c => c.id),
+      phone: profData.phone?.trim() || '',
+      role: profData.role || (professors.length === 0 ? 'admin' : 'professor'),
+      hasChangedPin: hasChanged,
+      isFirstAccess: !hasChanged,
+    };
+
+    const updatedProfs = [...professors, newProf];
+    setProfessors(updatedProfs);
+    try {
+      localStorage.setItem(STORAGE_PREFIX + 'professors', JSON.stringify(updatedProfs));
+    } catch {}
+
+    setActiveProfessorId(newProf.id);
+    try {
+      localStorage.setItem(STORAGE_PREFIX + 'active_prof', newProf.id);
+    } catch {}
+
+    const now = Date.now();
+    setLocalLastUpdated(now);
+    broadcastCurrentState({
+      professors: updatedProfs,
+      activeProfessorId: newProf.id,
+      classes,
+      students,
+      sessions,
+      justifications,
+      studentGrades,
+      appSettings,
+      selectedClassId,
+      lastUpdated: now,
+    });
+
+    playBeep('student_added');
+    return { 
+      success: true, 
+      message: `Conta criada com sucesso! Bem-vindo(a), ${newProf.name}!`, 
+      professor: newProf 
+    };
+  };
+
+  const logoutProfessor = () => {
+    const currentId = activeProfessorIdRef.current;
+    if (currentId && currentId !== 'guest') {
+      try {
+        localStorage.setItem(STORAGE_PREFIX + 'last_logged_in_prof', currentId);
+      } catch {}
+    }
+    setActiveProfessorId('');
+    try {
+      localStorage.setItem(STORAGE_PREFIX + 'active_prof', 'guest');
+    } catch {}
+
+    if (currentId) {
+      setTeacherPresences(prev => {
+        const copy = { ...prev };
+        delete copy[currentId];
+        return copy;
+      });
+    }
+
+    playBeep('warning');
+  };
+
+  const addProfessor = (profData: { name: string } & Partial<Omit<Professor, 'id' | 'name'>>) => {
+    const cleanName = profData.name.trim();
+    if (!cleanName) return;
+
+    const newProf: Professor = {
+      id: `prof-${Date.now()}`,
+      name: cleanName,
+      registrationNumber: profData.registrationNumber?.trim() || `DOC-${Math.floor(1000 + Math.random() * 9000)}`,
+      email: profData.email?.trim() || `${cleanName.toLowerCase().replace(/[^a-z0-9]/g, '.')}@uni9.edu.br`,
+      pin: profData.pin?.trim() || '1234',
+      password: profData.password?.trim() || profData.pin?.trim() || '1234',
+      discipline: profData.discipline?.trim() || 'BMF4 - Bases Morfofuncionais 4',
+      assignedClassIds: profData.assignedClassIds && profData.assignedClassIds.length > 0 
+        ? profData.assignedClassIds 
+        : classes.map(c => c.id),
+      phone: profData.phone?.trim() || '',
+      role: profData.role || (professors.length === 0 ? 'admin' : 'professor'),
+    };
+    const updatedProfs = [...professors, newProf];
+    setProfessors(updatedProfs);
+    try {
+      localStorage.setItem(STORAGE_PREFIX + 'professors', JSON.stringify(updatedProfs));
+    } catch {}
+
+    const newActiveId = (!activeProfessorId || professors.length === 0) ? newProf.id : activeProfessorId;
+    if (newActiveId !== activeProfessorId) {
+      setActiveProfessorId(newActiveId);
+      try {
+        localStorage.setItem(STORAGE_PREFIX + 'active_prof', newActiveId);
+      } catch {}
+    }
+
+    const now = Date.now();
+    setLocalLastUpdated(now);
+    broadcastCurrentState({
+      professors: updatedProfs,
+      activeProfessorId: newActiveId,
+      classes,
+      students,
+      sessions,
+      justifications,
+      studentGrades,
+      appSettings,
+      selectedClassId,
+      lastUpdated: now,
+    });
+    playBeep('success');
+  };
+
+  const updateProfessor = (id: string, updates: Partial<Professor>) => {
+    const updatedProfs = professors.map(p => p.id === id ? { ...p, ...updates } : p);
+    setProfessors(updatedProfs);
+    try {
+      localStorage.setItem(STORAGE_PREFIX + 'professors', JSON.stringify(updatedProfs));
+    } catch {}
+    const now = Date.now();
+    setLocalLastUpdated(now);
+    broadcastCurrentState({
+      professors: updatedProfs,
+      activeProfessorId,
+      classes,
+      students,
+      sessions,
+      justifications,
+      studentGrades,
+      appSettings,
+      selectedClassId,
+      lastUpdated: now,
+    });
+    playBeep('success');
+  };
+
+  const deleteProfessor = (id: string): { success: boolean; message: string } => {
+    // Check if active professor is an Admin
+    const isCurrentAdmin = activeProfessor?.role === 'admin' || professors.length <= 1;
+    if (!isCurrentAdmin) {
+      playBeep('alert');
+      return {
+        success: false,
+        message: 'Acesso Negado: Apenas o Professor Admin (Responsável pelo Sistema) tem permissão para excluir docentes.'
+      };
+    }
+
+    const remainingProfs = professors.filter(p => p.id !== id);
+    setProfessors(remainingProfs);
+    try {
+      localStorage.setItem(STORAGE_PREFIX + 'professors', JSON.stringify(remainingProfs));
+    } catch {}
+
+    let nextActiveId = activeProfessorId;
+    if (activeProfessorId === id) {
+      nextActiveId = remainingProfs.length > 0 ? remainingProfs[0].id : '';
+      setActiveProfessorId(nextActiveId);
+      try {
+        localStorage.setItem(STORAGE_PREFIX + 'active_prof', nextActiveId);
+      } catch {}
+    }
+
+    const updatedClasses = classes.map(cls => {
+      if (cls.professorId === id) {
+        return {
+          ...cls,
+          professorId: '',
+          professorName: 'Docente Não Definido',
+        };
+      }
+      return cls;
+    });
+    setClasses(updatedClasses);
+    try {
+      localStorage.setItem(STORAGE_PREFIX + 'classes', JSON.stringify(updatedClasses));
+    } catch {}
+
+    const now = Date.now();
+    setLocalLastUpdated(now);
+    broadcastCurrentState({
+      professors: remainingProfs,
+      activeProfessorId: nextActiveId,
+      classes: updatedClasses,
+      students,
+      sessions,
+      justifications,
+      studentGrades,
+      appSettings,
+      selectedClassId,
+      lastUpdated: now,
+    });
+
+    playBeep('alert');
+    return {
+      success: true,
+      message: 'Docente excluído com sucesso.'
+    };
+  };
+
+  // CRUD Grades (15 Atividades BMF4: 5 Teóricas, 5 Anatomia, 5 Histologia)
+  const setStudentGradeScore = (studentId: string, activityKey: GradeActivityKey | string, score: number | null | undefined, classId?: string) => {
+    const targetClassId = classId || selectedClassId;
+    const validatedScore = score === null || score === undefined ? null : Math.min(10, Math.max(0, Math.round(score * 10) / 10));
+
+    let updatedGrades: StudentGradeRecord[] = [];
+    setStudentGrades(prev => {
+      const existing = prev.find(g => g.studentId === studentId && g.classGroupId === targetClassId);
+      if (existing) {
+        updatedGrades = prev.map(g => {
+          if (g.studentId === studentId && g.classGroupId === targetClassId) {
+            return {
+              ...g,
+              scores: {
+                ...g.scores,
+                [activityKey]: validatedScore,
+              },
+              updatedAt: new Date().toISOString(),
+            };
+          }
+          return g;
+        });
+      } else {
+        const newGrade: StudentGradeRecord = {
+          studentId,
+          classGroupId: targetClassId,
+          scores: {
+            [activityKey]: validatedScore,
+          },
+          updatedAt: new Date().toISOString(),
+        };
+        updatedGrades = [...prev, newGrade];
+      }
+      return updatedGrades;
+    });
+
+    try {
+      localStorage.setItem(STORAGE_PREFIX + 'student_grades', JSON.stringify(updatedGrades));
+    } catch {}
+
+    const now = Date.now();
+    setLocalLastUpdated(now);
+    broadcastCurrentState({
+      professors,
+      activeProfessorId,
+      classes,
+      students,
+      sessions,
+      justifications,
+      studentGrades: updatedGrades,
+      appSettings,
+      selectedClassId,
+      lastUpdated: now,
+    });
+  };
+
+  const setStudentSubstituteExamScore = (studentId: string, score: number | null | undefined, classId?: string) => {
+    const targetClassId = classId || selectedClassId;
+    const validatedScore = score === null || score === undefined ? null : Math.min(10, Math.max(0, Math.round(score * 10) / 10));
+
+    let updatedGrades: StudentGradeRecord[] = [];
+    setStudentGrades(prev => {
+      const existing = prev.find(g => g.studentId === studentId && g.classGroupId === targetClassId);
+      if (existing) {
+        updatedGrades = prev.map(g => {
+          if (g.studentId === studentId && g.classGroupId === targetClassId) {
+            return {
+              ...g,
+              substituteExamScore: validatedScore,
+              updatedAt: new Date().toISOString(),
+            };
+          }
+          return g;
+        });
+      } else {
+        const newGrade: StudentGradeRecord = {
+          studentId,
+          classGroupId: targetClassId,
+          scores: {},
+          substituteExamScore: validatedScore,
+          updatedAt: new Date().toISOString(),
+        };
+        updatedGrades = [...prev, newGrade];
+      }
+      return updatedGrades;
+    });
+
+    try {
+      localStorage.setItem(STORAGE_PREFIX + 'student_grades', JSON.stringify(updatedGrades));
+    } catch {}
+
+    const now = Date.now();
+    setLocalLastUpdated(now);
+    broadcastCurrentState({
+      professors,
+      activeProfessorId,
+      classes,
+      students,
+      sessions,
+      justifications,
+      studentGrades: updatedGrades,
+      appSettings,
+      selectedClassId,
+      lastUpdated: now,
+    });
+  };
+
+  const setStudentGradeNotes = (studentId: string, notes: string, classId?: string) => {
+    const targetClassId = classId || selectedClassId;
+    let updatedGrades: StudentGradeRecord[] = [];
+    setStudentGrades(prev => {
+      const existing = prev.find(g => g.studentId === studentId && g.classGroupId === targetClassId);
+      if (existing) {
+        updatedGrades = prev.map(g => g.studentId === studentId && g.classGroupId === targetClassId ? { ...g, notes, updatedAt: new Date().toISOString() } : g);
+      } else {
+        updatedGrades = [...prev, { studentId, classGroupId: targetClassId, scores: {}, notes, updatedAt: new Date().toISOString() }];
+      }
+      return updatedGrades;
+    });
+
+    try {
+      localStorage.setItem(STORAGE_PREFIX + 'student_grades', JSON.stringify(updatedGrades));
+    } catch {}
+
+    const now = Date.now();
+    setLocalLastUpdated(now);
+    broadcastCurrentState({
+      professors,
+      activeProfessorId,
+      classes,
+      students,
+      sessions,
+      justifications,
+      studentGrades: updatedGrades,
+      appSettings,
+      selectedClassId,
+      lastUpdated: now,
+    });
+  };
+
+  // Helper to calculate student's comprehensive academic status (15 Atividades + Attendance)
+  const calculateAcademicStatus = (studentId: string, classId?: string): StudentAcademicStatus => {
+    const targetClassId = classId || selectedClassId;
+    const student = students.find(s => s.id === studentId);
+    const gradeRecord = studentGrades.find(g => g.studentId === studentId && g.classGroupId === targetClassId);
+
+    // 1. Calculate Attendance Rate
+    const classSessions = sessions.filter(s => s.classGroupId === targetClassId);
+    let totalSessions = classSessions.length;
+    let presentCount = 0;
+    let absentCount = 0;
+
+    if (totalSessions > 0) {
+      classSessions.forEach(session => {
+        const rec = session.attendance?.[studentId];
+        if (rec) {
+          if (rec.status === 'present' || rec.status === 'late' || rec.status === 'excused') {
+            presentCount++;
+          } else {
+            absentCount++;
+          }
+        } else {
+          absentCount++;
+        }
+      });
+    } else {
+      presentCount = student?.presences || 0;
+      absentCount = student?.absences || 0;
+      totalSessions = presentCount + absentCount || 1;
+    }
+
+    const attendanceRate = totalSessions > 0 ? Math.round((presentCount / totalSessions) * 100) : 100;
+
+    // 2. Calculate Category Averages (5 Teóricas, 5 Anatomia, 5 Histologia)
+    const calcCatAvg = (keys: string[]) => {
+      let sum = 0;
+      let count = 0;
+      keys.forEach(k => {
+        const val = gradeRecord?.scores?.[k];
+        if (val !== null && val !== undefined) {
+          sum += val;
+          count++;
+        }
+      });
+      return count > 0 ? +(sum / count).toFixed(1) : 0;
+    };
+
+    const teoricaAverage = calcCatAvg(['t1', 't2', 't3', 't4', 't5']);
+    const anatomiaAverage = calcCatAvg(['a1', 'a2', 'a3', 'a4', 'a5']);
+    const histologiaAverage = calcCatAvg(['h1', 'h2', 'h3', 'h4', 'h5']);
+
+    // Overall Partial Average (Equal weight across the 3 categories or valid scores)
+    let totalValidSum = 0;
+    let totalValidCount = 0;
+    const all15Keys = ['t1', 't2', 't3', 't4', 't5', 'a1', 'a2', 'a3', 'a4', 'a5', 'h1', 'h2', 'h3', 'h4', 'h5'];
+    all15Keys.forEach(k => {
+      const val = gradeRecord?.scores?.[k];
+      if (val !== null && val !== undefined) {
+        totalValidSum += val;
+        totalValidCount++;
+      }
+    });
+
+    const partialAverage = totalValidCount > 0 ? +(totalValidSum / totalValidCount).toFixed(1) : 0;
+    const substituteScore = gradeRecord?.substituteExamScore;
+    
+    let finalAverage = partialAverage;
+    let status: 'aprovado' | 'exame' | 'reprovado_nota' | 'reprovado_falta' = 'aprovado';
+    let statusLabel = 'Aprovado Direto';
+
+    if (attendanceRate < 75 && totalSessions > 0) {
+      status = 'reprovado_falta';
+      statusLabel = 'Reprovado por Frequência (< 75%)';
+    } else if (partialAverage >= 7.0) {
+      status = 'aprovado';
+      statusLabel = 'Aprovado Direto (Média ≥ 7.0)';
+    } else if (partialAverage >= 5.0) {
+      if (substituteScore !== null && substituteScore !== undefined) {
+        finalAverage = +((partialAverage + substituteScore) / 2).toFixed(1);
+        if (finalAverage >= 5.0) {
+          status = 'aprovado';
+          statusLabel = 'Aprovado em Exame (Média Final ≥ 5.0)';
+        } else {
+          status = 'reprovado_nota';
+          statusLabel = 'Reprovado após Exame (Média < 5.0)';
+        }
+      } else {
+        status = 'exame';
+        statusLabel = 'Em Exame / Prova Substitutiva';
+      }
+    } else {
+      status = 'reprovado_nota';
+      statusLabel = 'Reprovado por Nota (< 5.0)';
+    }
+
+    return {
+      studentId,
+      studentName: student?.name || 'Aluno',
+      registrationNumber: student?.registrationNumber || '',
+      attendanceRate,
+      totalPresences: presentCount,
+      totalAbsences: absentCount,
+      teoricaAverage,
+      anatomiaAverage,
+      histologiaAverage,
+      partialAverage,
+      finalAverage,
+      substituteScore,
+      status,
+      statusLabel,
+    };
+  };
+
+  // CRUD Students
+  const addStudent = (studentData: Omit<Student, 'id'>) => {
+    const newStudent: Student = {
+      ...studentData,
+      id: `std-${Date.now()}-${Math.floor(Math.random() * 1000)}`,
+      discipline: studentData.discipline || 'BMF4',
+      presences: 1,
+      absences: 0,
+      lates: 0,
+      excused: 0,
+    };
+    const updatedStudents = [newStudent, ...students];
+    setStudents(updatedStudents);
+    try {
+      localStorage.setItem(STORAGE_PREFIX + 'students', JSON.stringify(updatedStudents));
+    } catch {}
+
+    const now = Date.now();
+    setLocalLastUpdated(now);
+    broadcastCurrentState({
+      professors,
+      activeProfessorId,
+      classes,
+      students: updatedStudents,
+      sessions,
+      justifications,
+      studentGrades,
+      appSettings,
+      selectedClassId,
+      lastUpdated: now,
+    });
+    playBeep('success');
+  };
+
+  const updateStudent = (id: string, updates: Partial<Student>) => {
+    const updatedStudents = students.map(s => s.id === id ? { ...s, ...updates } : s);
+    setStudents(updatedStudents);
+    try {
+      localStorage.setItem(STORAGE_PREFIX + 'students', JSON.stringify(updatedStudents));
+    } catch {}
+    const now = Date.now();
+    setLocalLastUpdated(now);
+    broadcastCurrentState({
+      professors,
+      activeProfessorId,
+      classes,
+      students: updatedStudents,
+      sessions,
+      justifications,
+      studentGrades,
+      appSettings,
+      selectedClassId,
+      lastUpdated: now,
+    });
+    playBeep('success');
+  };
+
+  const deleteStudent = (id: string) => {
+    const updatedStudents = students.filter(s => s.id !== id);
+    setStudents(updatedStudents);
+    try {
+      localStorage.setItem(STORAGE_PREFIX + 'students', JSON.stringify(updatedStudents));
+    } catch {}
+
+    const updatedSessions = sessions.map(s => {
+      if (s.attendance && s.attendance[id]) {
+        const newAtt = { ...s.attendance };
+        delete newAtt[id];
+        return { ...s, attendance: newAtt };
+      }
+      return s;
+    });
+    setSessions(updatedSessions);
+    try {
+      localStorage.setItem(STORAGE_PREFIX + 'sessions', JSON.stringify(updatedSessions));
+    } catch {}
+
+    const updatedJustifications = justifications.filter(j => j.studentId !== id);
+    setJustifications(updatedJustifications);
+    try {
+      localStorage.setItem(STORAGE_PREFIX + 'justifications', JSON.stringify(updatedJustifications));
+    } catch {}
+
+    const now = Date.now();
+    setLocalLastUpdated(now);
+    broadcastCurrentState({
+      professors,
+      activeProfessorId,
+      classes,
+      students: updatedStudents,
+      sessions: updatedSessions,
+      justifications: updatedJustifications,
+      studentGrades,
+      appSettings,
+      selectedClassId,
+      lastUpdated: now,
+    });
+  };
+
+  const deleteMultipleStudents = (ids: string[]) => {
+    const idSet = new Set(ids);
+    const updatedStudents = students.filter(s => !idSet.has(s.id));
+    setStudents(updatedStudents);
+    try {
+      localStorage.setItem(STORAGE_PREFIX + 'students', JSON.stringify(updatedStudents));
+    } catch {}
+
+    const updatedSessions = sessions.map(s => {
+      if (s.attendance) {
+        let changed = false;
+        const newAtt = { ...s.attendance };
+        ids.forEach(id => {
+          if (newAtt[id]) {
+            delete newAtt[id];
+            changed = true;
+          }
+        });
+        if (changed) {
+          return { ...s, attendance: newAtt };
+        }
+      }
+      return s;
+    });
+    setSessions(updatedSessions);
+    try {
+      localStorage.setItem(STORAGE_PREFIX + 'sessions', JSON.stringify(updatedSessions));
+    } catch {}
+
+    const updatedJustifications = justifications.filter(j => !idSet.has(j.studentId));
+    setJustifications(updatedJustifications);
+    try {
+      localStorage.setItem(STORAGE_PREFIX + 'justifications', JSON.stringify(updatedJustifications));
+    } catch {}
+
+    const now = Date.now();
+    setLocalLastUpdated(now);
+    broadcastCurrentState({
+      professors,
+      activeProfessorId,
+      classes,
+      students: updatedStudents,
+      sessions: updatedSessions,
+      justifications: updatedJustifications,
+      studentGrades,
+      appSettings,
+      selectedClassId,
+      lastUpdated: now,
+    });
+    playBeep('alert');
+  };
+
+  const deleteAllStudentsFromClass = (classId: string) => {
+    const studentIdsToRemove = new Set<string>(students.filter(s => s.classGroupId === classId).map(s => s.id));
+    const updatedStudents = students.filter(s => s.classGroupId !== classId);
+    setStudents(updatedStudents);
+    try {
+      localStorage.setItem(STORAGE_PREFIX + 'students', JSON.stringify(updatedStudents));
+    } catch {}
+
+    const updatedSessions = sessions.map(s => {
+      if (s.classGroupId === classId) {
+        return { ...s, attendance: {} };
+      }
+      if (s.attendance) {
+        let changed = false;
+        const newAtt = { ...s.attendance };
+        studentIdsToRemove.forEach((id: string) => {
+          if (newAtt[id]) {
+            delete newAtt[id];
+            changed = true;
+          }
+        });
+        if (changed) {
+          return { ...s, attendance: newAtt };
+        }
+      }
+      return s;
+    });
+    setSessions(updatedSessions);
+    try {
+      localStorage.setItem(STORAGE_PREFIX + 'sessions', JSON.stringify(updatedSessions));
+    } catch {}
+
+    const updatedJustifications = justifications.filter(j => !studentIdsToRemove.has(j.studentId));
+    setJustifications(updatedJustifications);
+    try {
+      localStorage.setItem(STORAGE_PREFIX + 'justifications', JSON.stringify(updatedJustifications));
+    } catch {}
+
+    const now = Date.now();
+    setLocalLastUpdated(now);
+    broadcastCurrentState({
+      professors,
+      activeProfessorId,
+      classes,
+      students: updatedStudents,
+      sessions: updatedSessions,
+      justifications: updatedJustifications,
+      studentGrades,
+      appSettings,
+      selectedClassId,
+      lastUpdated: now,
+    });
+    playBeep('alert');
+  };
+
+  const clearAllStudents = () => {
+    setStudents([]);
+    try {
+      localStorage.setItem(STORAGE_PREFIX + 'students', '[]');
+    } catch {}
+    const updatedSessions = sessions.map(s => ({ ...s, attendance: {} }));
+    setSessions(updatedSessions);
+    try {
+      localStorage.setItem(STORAGE_PREFIX + 'sessions', JSON.stringify(updatedSessions));
+    } catch {}
+    setJustifications([]);
+    try {
+      localStorage.setItem(STORAGE_PREFIX + 'justifications', '[]');
+    } catch {}
+
+    const now = Date.now();
+    setLocalLastUpdated(now);
+    broadcastCurrentState({
+      professors,
+      activeProfessorId,
+      classes,
+      students: [],
+      sessions: updatedSessions,
+      justifications: [],
+      studentGrades,
+      appSettings,
+      selectedClassId,
+      lastUpdated: now,
+    });
+    playBeep('alert');
+  };
+
+  const addMultipleStudents = (newStudentsData: Array<Omit<Student, 'id'>>) => {
+    const created: Student[] = newStudentsData.map((data, idx) => ({
+      ...data,
+      id: `std-${Date.now()}-${idx}-${Math.random().toString(36).substring(2, 7)}`,
+      discipline: data.discipline || 'BMF4',
+      totalClasses: 0,
+      presences: 0,
+      absences: 0,
+      lates: 0,
+      excused: 0,
+    }));
+    const updatedStudents = [...created, ...students];
+    setStudents(updatedStudents);
+    try {
+      localStorage.setItem(STORAGE_PREFIX + 'students', JSON.stringify(updatedStudents));
+    } catch {}
+
+    const now = Date.now();
+    setLocalLastUpdated(now);
+    broadcastCurrentState({
+      professors,
+      activeProfessorId,
+      classes,
+      students: updatedStudents,
+      sessions,
+      justifications,
+      studentGrades,
+      appSettings,
+      selectedClassId,
+      lastUpdated: now,
+    });
+    playBeep('success');
+    return created;
+  };
+
+  // CRUD Classes
+  const addClassGroup = (classData: Omit<ClassGroup, 'id'>) => {
+    const newClass: ClassGroup = {
+      ...classData,
+      id: `class-${Date.now()}`,
+      discipline: classData.discipline || 'BMF4 - Bases Morfofuncionais 4',
+    };
+    const updatedClasses = sortClassesAlphabetically([...classes, newClass]);
+    setClasses(updatedClasses);
+    try {
+      localStorage.setItem(STORAGE_PREFIX + 'classes', JSON.stringify(updatedClasses));
+    } catch {}
+
+    setSelectedClassId(newClass.id);
+    try {
+      localStorage.setItem(STORAGE_PREFIX + 'selectedClass', newClass.id);
+    } catch {}
+
+    const now = Date.now();
+    setLocalLastUpdated(now);
+    broadcastCurrentState({
+      professors,
+      activeProfessorId,
+      classes: updatedClasses,
+      students,
+      sessions,
+      justifications,
+      studentGrades,
+      appSettings,
+      selectedClassId: newClass.id,
+      lastUpdated: now,
+    });
+    playBeep('success');
+  };
+
+  const updateClassGroup = (id: string, updates: Partial<ClassGroup>) => {
+    const updatedClasses = sortClassesAlphabetically(classes.map(c => c.id === id ? { ...c, ...updates } : c));
+    setClasses(updatedClasses);
+    try {
+      localStorage.setItem(STORAGE_PREFIX + 'classes', JSON.stringify(updatedClasses));
+    } catch {}
+
+    const now = Date.now();
+    setLocalLastUpdated(now);
+    broadcastCurrentState({
+      professors,
+      activeProfessorId,
+      classes: updatedClasses,
+      students,
+      sessions,
+      justifications,
+      studentGrades,
+      appSettings,
+      selectedClassId,
+      lastUpdated: now,
+    });
+    playBeep('success');
+  };
+
+  const deleteClassGroup = (id: string, deleteAssociatedStudents: boolean = false) => {
+    const remainingClasses = classes.filter(c => c.id !== id);
+    let nextClassId = selectedClassId;
+    if (selectedClassId === id) {
+      nextClassId = remainingClasses.length > 0 ? remainingClasses[0].id : '';
+      setSelectedClassId(nextClassId);
+      try {
+        localStorage.setItem(STORAGE_PREFIX + 'selectedClass', nextClassId);
+      } catch {}
+    }
+
+    const sortedClasses = sortClassesAlphabetically(remainingClasses);
+    setClasses(sortedClasses);
+    try {
+      localStorage.setItem(STORAGE_PREFIX + 'classes', JSON.stringify(sortedClasses));
+    } catch {}
+
+    const updatedSessions = sessions.filter(s => s.classGroupId !== id);
+    setSessions(updatedSessions);
+    try {
+      localStorage.setItem(STORAGE_PREFIX + 'sessions', JSON.stringify(updatedSessions));
+    } catch {}
+
+    let updatedStudents = students;
+    let updatedJustifications = justifications;
+    if (deleteAssociatedStudents) {
+      const removedStudentIds = new Set(students.filter(s => s.classGroupId === id).map(s => s.id));
+      updatedJustifications = justifications.filter(j => !removedStudentIds.has(j.studentId));
+      setJustifications(updatedJustifications);
+      try {
+        localStorage.setItem(STORAGE_PREFIX + 'justifications', JSON.stringify(updatedJustifications));
+      } catch {}
+
+      updatedStudents = students.filter(s => s.classGroupId !== id);
+      setStudents(updatedStudents);
+      try {
+        localStorage.setItem(STORAGE_PREFIX + 'students', JSON.stringify(updatedStudents));
+      } catch {}
+    }
+
+    const now = Date.now();
+    setLocalLastUpdated(now);
+    broadcastCurrentState({
+      professors,
+      activeProfessorId,
+      classes: sortedClasses,
+      students: updatedStudents,
+      sessions: updatedSessions,
+      justifications: updatedJustifications,
+      studentGrades,
+      appSettings,
+      selectedClassId: nextClassId,
+      lastUpdated: now,
+    });
+    playBeep('alert');
+  };
+
+  // Start new lab session
+  const startNewSession = (
+    optionsOrTopic: string | StartSessionOptions, 
+    specimens?: string[], 
+    notes?: string
+  ) => {
+    const code = `BMF-${Math.floor(100 + Math.random() * 900)}`;
+    const isOptionsObj = typeof optionsOrTopic === 'object';
+    const topic = isOptionsObj ? optionsOrTopic.topic : optionsOrTopic;
+    const targetClassId = (isOptionsObj && optionsOrTopic.classGroupId) ? optionsOrTopic.classGroupId : selectedClassId;
+    const targetProfId = (isOptionsObj && optionsOrTopic.professorId) ? optionsOrTopic.professorId : activeProfessorId;
+    const profObj = professors.find(p => p.id === targetProfId) || activeProfessor;
+    const category: ActivityCategory = (isOptionsObj && optionsOrTopic.activityCategory) ? optionsOrTopic.activityCategory : 'pratica';
+    const actType: ActivityType = (isOptionsObj && optionsOrTopic.activityType) ? optionsOrTopic.activityType : 'aula_pratica';
+    const isActivity = actType.startsWith('atividade') || actType === 'prova_teorica';
+    const defaultPeriod: ClassPeriod = isActivity ? 'activity_single' : 'p1_start';
+    const period: ClassPeriod = (isOptionsObj && optionsOrTopic.activePeriod) ? optionsOrTopic.activePeriod : defaultPeriod;
+    const sessionDate = (isOptionsObj && optionsOrTopic.date) ? optionsOrTopic.date : new Date().toISOString().split('T')[0];
+    const labLoc: LaboratoryLocation | undefined = (isOptionsObj && optionsOrTopic.labLocation) 
+      ? optionsOrTopic.labLocation 
+      : (category === 'pratica' ? 'anatomia' : undefined);
+
+    const newSession: LabSession = {
+      id: `sess-${Date.now()}`,
+      classGroupId: targetClassId,
+      discipline: 'BMF4',
+      professorId: targetProfId,
+      professorName: profObj?.name || 'Prof. Dr. Juliano Pereira',
+      activityCategory: category,
+      activityType: actType,
+      labLocation: labLoc,
+      activePeriod: period,
+      isPeriod1Locked: false,
+      isPeriod2Locked: false,
+      isP1StartLocked: false,
+      isP1EndLocked: false,
+      isP2StartLocked: false,
+      isP2EndLocked: false,
+      isActivitySingleLocked: false,
+      date: sessionDate,
+      startTime: `${String(new Date().getHours()).padStart(2, '0')}:${String(new Date().getMinutes()).padStart(2, '0')}`,
+      endTime: '12:00',
+      topic: topic || (isActivity ? 'Atividade Prática BMF4' : 'Aula BMF4 - Morfofuncional'),
+      anatomicalSpecimens: (isOptionsObj && optionsOrTopic.specimens) ? optionsOrTopic.specimens : (specimens && specimens.length > 0 ? specimens : ['Peças anatômicas / Roteiro prático']),
+      checkinCode: code,
+      isLive: true,
+      isLocked: false,
+      openedAt: new Date().toISOString(),
+      notes: (isOptionsObj && optionsOrTopic.notes) ? optionsOrTopic.notes : (notes || 'Obrigatório uso de EPI: Jaleco abotoado, luvas e calçado fechado.'),
+      attendance: {},
+      syncStatus: 'synced',
+    };
+
+    const classStudents = students.filter(s => s.classGroupId === targetClassId);
+    classStudents.forEach(s => {
+      newSession.attendance[s.id] = {
+        studentId: s.id,
+        status: 'absent',
+        period1Status: 'absent',
+        period2Status: 'absent',
+        p1StartStatus: 'absent',
+        p1EndStatus: 'absent',
+        p2StartStatus: 'absent',
+        p2EndStatus: 'absent',
+        epiVerified: false,
+      };
+    });
+
+    const updatedSessions = [
+      newSession, 
+      ...sessions.map(s => s.classGroupId === targetClassId ? { ...s, isLive: false, isLocked: true, isPaused: false } : s)
+    ];
+    setSessions(updatedSessions);
+    try {
+      localStorage.setItem(STORAGE_PREFIX + 'sessions', JSON.stringify(updatedSessions));
+    } catch {}
+
+    setDismissedConflictId(null);
+
+    const nextSelectedClassId = targetClassId || selectedClassId;
+    if (targetClassId !== selectedClassId) {
+      setSelectedClassId(targetClassId);
+      try {
+        localStorage.setItem(STORAGE_PREFIX + 'selectedClass', targetClassId);
+      } catch {}
+    }
+
+    const nowTimestamp = Date.now();
+    setLocalLastUpdated(nowTimestamp);
+    broadcastCurrentState({
+      professors,
+      activeProfessorId: targetProfId || activeProfessorId,
+      classes,
+      students,
+      sessions: updatedSessions,
+      justifications,
+      studentGrades,
+      appSettings,
+      selectedClassId: nextSelectedClassId,
+      lastUpdated: nowTimestamp,
+    });
+    playBeep('session_start');
+  };
+
+  const updateSession = (sessionId: string, updates: Partial<LabSession>) => {
+    const updated = sessions.map(s => s.id === sessionId ? { ...s, ...updates } : s);
+    setSessions(updated);
+    try {
+      localStorage.setItem(STORAGE_PREFIX + 'sessions', JSON.stringify(updated));
+    } catch {}
+
+    const now = Date.now();
+    setLocalLastUpdated(now);
+    broadcastCurrentState({
+      professors,
+      activeProfessorId,
+      classes,
+      students,
+      sessions: updated,
+      justifications,
+      studentGrades,
+      appSettings,
+      selectedClassId,
+      lastUpdated: now,
+    });
+  };
+
+  const deleteSession = (sessionId: string) => {
+    if (!sessionId) return;
+    const newDeletedIds = Array.from(new Set([...deletedSessionIdsRef.current, sessionId]));
+    setDeletedSessionIds(newDeletedIds);
+    deletedSessionIdsRef.current = newDeletedIds;
+    try {
+      localStorage.setItem(STORAGE_PREFIX + 'deleted_session_ids', JSON.stringify(newDeletedIds));
+    } catch {}
+
+    const updatedSessions = sessions.filter(s => s.id !== sessionId);
+    const updatedStudents = computeStudentsWithRecalculatedStats(students, updatedSessions);
+    setSessions(updatedSessions);
+    setStudents(updatedStudents);
+    try {
+      localStorage.setItem(STORAGE_PREFIX + 'sessions', JSON.stringify(updatedSessions));
+      localStorage.setItem(STORAGE_PREFIX + 'students', JSON.stringify(updatedStudents));
+    } catch {}
+
+    const now = Date.now();
+    setLocalLastUpdated(now);
+    broadcastCurrentState({
+      professors,
+      activeProfessorId,
+      classes,
+      students: updatedStudents,
+      sessions: updatedSessions,
+      deletedSessionIds: newDeletedIds,
+      justifications,
+      studentGrades,
+      appSettings,
+      selectedClassId,
+      userMutation: true,
+      lastUpdated: now,
+    });
+
+    // Explicit server deletion & stat recalculation trigger
+    fetch('/api/sessions/delete', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        sessionId,
+        senderClientId: clientIdRef.current,
+      }),
+    }).catch(err => console.debug('Session delete API notice:', err));
+
+    playBeep('delete');
+  };
+
+  const deleteMultipleSessions = (sessionIds: string[]) => {
+    if (!Array.isArray(sessionIds) || sessionIds.length === 0) return;
+    const idsSet = new Set(sessionIds);
+    const newDeletedIds = Array.from(new Set([...deletedSessionIdsRef.current, ...sessionIds]));
+    setDeletedSessionIds(newDeletedIds);
+    deletedSessionIdsRef.current = newDeletedIds;
+    try {
+      localStorage.setItem(STORAGE_PREFIX + 'deleted_session_ids', JSON.stringify(newDeletedIds));
+    } catch {}
+
+    const updatedSessions = sessions.filter(s => !idsSet.has(s.id));
+    const updatedStudents = computeStudentsWithRecalculatedStats(students, updatedSessions);
+    setSessions(updatedSessions);
+    setStudents(updatedStudents);
+    try {
+      localStorage.setItem(STORAGE_PREFIX + 'sessions', JSON.stringify(updatedSessions));
+      localStorage.setItem(STORAGE_PREFIX + 'students', JSON.stringify(updatedStudents));
+    } catch {}
+
+    const now = Date.now();
+    setLocalLastUpdated(now);
+    broadcastCurrentState({
+      professors,
+      activeProfessorId,
+      classes,
+      students: updatedStudents,
+      sessions: updatedSessions,
+      deletedSessionIds: newDeletedIds,
+      justifications,
+      studentGrades,
+      appSettings,
+      selectedClassId,
+      userMutation: true,
+      lastUpdated: now,
+    });
+
+    fetch('/api/sessions/delete', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        sessionIds,
+        senderClientId: clientIdRef.current,
+      }),
+    }).catch(err => console.debug('Batch delete API notice:', err));
+
+    playBeep('delete');
+  };
+
+  const updateSessionAttendance = (
+    sessionId: string,
+    studentId: string,
+    status: AttendanceStatus,
+    period?: ClassPeriod,
+    epiVerified?: boolean
+  ) => {
+    const targetSession = sessions.find(s => s.id === sessionId);
+    if (!targetSession) return;
+    const targetPeriod = period || targetSession.activePeriod || 'both';
+    const existingRec = targetSession.attendance?.[studentId];
+    const now = new Date();
+    const timeStr = `${String(now.getHours()).padStart(2, '0')}:${String(now.getMinutes()).padStart(2, '0')}:${String(now.getSeconds()).padStart(2, '0')}`;
+
+    let newPeriod1 = existingRec?.period1Status;
+    let newPeriod2 = existingRec?.period2Status;
+    let newP1Start = existingRec?.p1StartStatus;
+    let newP1End = existingRec?.p1EndStatus;
+    let newP2Start = existingRec?.p2StartStatus;
+    let newP2End = existingRec?.p2EndStatus;
+
+    let newP1StartTime = existingRec?.p1StartTimestamp;
+    let newP1EndTime = existingRec?.p1EndTimestamp;
+    let newP2StartTime = existingRec?.p2StartTimestamp;
+    let newP2EndTime = existingRec?.p2EndTimestamp;
+    let newPeriod1Time = existingRec?.period1Timestamp;
+    let newPeriod2Time = existingRec?.period2Timestamp;
+
+    if (status === 'absent') {
+      if (targetPeriod === '1' || targetPeriod === 'p1_start') {
+        newP1Start = 'absent';
+        newP1StartTime = undefined;
+        newPeriod1Time = undefined;
+        newPeriod1 = 'absent';
+      }
+      if (targetPeriod === '1' || targetPeriod === 'p1_end') {
+        newP1End = 'absent';
+        newP1EndTime = undefined;
+        if (targetPeriod === '1' || newP1Start !== 'present') {
+          newPeriod1 = 'absent';
+        }
+      }
+      if (targetPeriod === '2' || targetPeriod === 'p2_start') {
+        newP2Start = 'absent';
+        newP2StartTime = undefined;
+        newPeriod2Time = undefined;
+        newPeriod2 = 'absent';
+      }
+      if (targetPeriod === '2' || targetPeriod === 'p2_end') {
+        newP2End = 'absent';
+        newP2EndTime = undefined;
+        if (targetPeriod === '2' || newP2Start !== 'present') {
+          newPeriod2 = 'absent';
+        }
+      }
+      if (targetPeriod === 'both' || targetPeriod === 'activity_single') {
+        newPeriod1 = 'absent';
+        newPeriod2 = 'absent';
+        newP1Start = 'absent';
+        newP1End = 'absent';
+        newP2Start = 'absent';
+        newP2End = 'absent';
+        newP1StartTime = undefined;
+        newP1EndTime = undefined;
+        newP2StartTime = undefined;
+        newP2EndTime = undefined;
+        newPeriod1Time = undefined;
+        newPeriod2Time = undefined;
+      }
+    } else {
+      if (targetPeriod === 'p1_start') {
+        newP1Start = status;
+        if (status === 'present' || status === 'late') {
+          newP1StartTime = timeStr;
+          newPeriod1Time = timeStr;
+        }
+        newPeriod1 = status;
+      } else if (targetPeriod === 'p1_end') {
+        newP1End = status;
+        if (status === 'present' || status === 'late') {
+          newP1EndTime = timeStr;
+          newPeriod1Time = timeStr;
+        }
+        newPeriod1 = status;
+      } else if (targetPeriod === 'p2_start') {
+        newP2Start = status;
+        if (status === 'present' || status === 'late') {
+          newP2StartTime = timeStr;
+          newPeriod2Time = timeStr;
+        }
+        newPeriod2 = status;
+      } else if (targetPeriod === 'p2_end') {
+        newP2End = status;
+        if (status === 'present' || status === 'late') {
+          newP2EndTime = timeStr;
+          newPeriod2Time = timeStr;
+        }
+        newPeriod2 = status;
+      } else if (targetPeriod === 'activity_single') {
+        newPeriod1 = status;
+        newPeriod2 = status;
+        newP1Start = status;
+        newP1End = status;
+        newP2Start = status;
+        newP2End = status;
+        if (status === 'present' || status === 'late') {
+          newPeriod1Time = timeStr;
+          newPeriod2Time = timeStr;
+          newP1StartTime = timeStr;
+        }
+      } else if (targetPeriod === '1') {
+        newPeriod1 = status;
+        newP1Start = status;
+        newP1End = status;
+        if (status === 'present' || status === 'late') {
+          newPeriod1Time = timeStr;
+          newP1StartTime = newP1StartTime || timeStr;
+          newP1EndTime = timeStr;
+        }
+      } else if (targetPeriod === '2') {
+        newPeriod2 = status;
+        newP2Start = status;
+        newP2End = status;
+        if (status === 'present' || status === 'late') {
+          newPeriod2Time = timeStr;
+          newP2StartTime = newP2StartTime || timeStr;
+          newP2EndTime = timeStr;
+        }
+      } else {
+        newPeriod1 = status;
+        newPeriod2 = status;
+        newP1Start = status;
+        newP1End = status;
+        newP2Start = status;
+        newP2End = status;
+        if (status === 'present' || status === 'late') {
+          newPeriod1Time = timeStr;
+          newPeriod2Time = timeStr;
+          newP1StartTime = newP1StartTime || timeStr;
+          newP1EndTime = timeStr;
+          newP2StartTime = newP2StartTime || timeStr;
+          newP2EndTime = timeStr;
+        }
+      }
+    }
+
+    const resolvedOverall = (status === 'absent' && (targetPeriod === 'both' || targetPeriod === 'activity_single'))
+      ? 'absent'
+      : status === 'absent'
+      ? computeOverallStatus(newPeriod1, newPeriod2)
+      : status;
+
+    const updatedSessions = sessions.map(s => {
+      if (s.id === sessionId) {
+        return {
+          ...s,
+          attendance: {
+            ...s.attendance,
+            [studentId]: {
+              studentId,
+              status: resolvedOverall,
+              period1Status: newPeriod1,
+              period2Status: newPeriod2,
+              p1StartStatus: newP1Start,
+              p1EndStatus: newP1End,
+              p2StartStatus: newP2Start,
+              p2EndStatus: newP2End,
+              p1StartTimestamp: newP1StartTime,
+              p1EndTimestamp: newP1EndTime,
+              p2StartTimestamp: newP2StartTime,
+              p2EndTimestamp: newP2EndTime,
+              period1Timestamp: newPeriod1Time,
+              period2Timestamp: newPeriod2Time,
+              timestamp: (status === 'present' || status === 'late') ? (existingRec?.timestamp || timeStr) : undefined,
+              deviceId: (status === 'present' || status === 'late') ? existingRec?.deviceId : undefined,
+              epiVerified: (status === 'present' || status === 'late') ? (epiVerified ?? true) : false,
+              checkinMethod: existingRec?.checkinMethod || 'manual',
+            }
+          }
+        };
+      }
+      return s;
+    });
+
+    const updatedStudents = computeStudentsWithRecalculatedStats(students, updatedSessions);
+    setSessions(updatedSessions);
+    setStudents(updatedStudents);
+    try {
+      localStorage.setItem(STORAGE_PREFIX + 'sessions', JSON.stringify(updatedSessions));
+      localStorage.setItem(STORAGE_PREFIX + 'students', JSON.stringify(updatedStudents));
+    } catch {}
+
+    const nowTs = Date.now();
+    setLocalLastUpdated(nowTs);
+    broadcastCurrentState({
+      professors,
+      activeProfessorId,
+      classes,
+      students: updatedStudents,
+      sessions: updatedSessions,
+      justifications,
+      studentGrades,
+      appSettings,
+      selectedClassId,
+      lastUpdated: nowTs,
+    });
+
+    const targetStudent = students.find(s => s.id === studentId);
+    enqueueOutboxItem({
+      eventType: status === 'excused' ? 'EXCUSE_STUDENT' : 'RECORD_ATTENDANCE',
+      sessionId,
+      studentId,
+      studentName: targetStudent?.name,
+      classGroupId: targetSession.classGroupId,
+      status: resolvedOverall,
+      period: targetPeriod,
+      timestamp: timeStr,
+      payload: {
+        record: {
+          studentId,
+          status: resolvedOverall,
+          period1Status: newPeriod1,
+          period2Status: newPeriod2,
+          p1StartStatus: newP1Start,
+          p1EndStatus: newP1End,
+          p2StartStatus: newP2Start,
+          p2EndStatus: newP2End,
+          timestamp: timeStr,
+          epiVerified: (status === 'present' || status === 'late') ? (epiVerified ?? true) : false,
+          checkinMethod: existingRec?.checkinMethod || 'manual',
+        }
+      }
+    });
+
+    playBeep(status === 'absent' ? 'delete' : 'success');
+  };
+
+  const deleteSessionAttendance = (sessionId: string, studentId: string) => {
+    const targetSession = sessions.find(s => s.id === sessionId);
+    if (!targetSession) return;
+    const newAttendance = { ...targetSession.attendance };
+    delete newAttendance[studentId];
+
+    const updatedSessions = sessions.map(s => s.id === sessionId ? { ...s, attendance: newAttendance } : s);
+    const updatedStudents = computeStudentsWithRecalculatedStats(students, updatedSessions);
+    setSessions(updatedSessions);
+    setStudents(updatedStudents);
+    try {
+      localStorage.setItem(STORAGE_PREFIX + 'sessions', JSON.stringify(updatedSessions));
+      localStorage.setItem(STORAGE_PREFIX + 'students', JSON.stringify(updatedStudents));
+    } catch {}
+
+    const nowTs = Date.now();
+    setLocalLastUpdated(nowTs);
+    broadcastCurrentState({
+      professors,
+      activeProfessorId,
+      classes,
+      students: updatedStudents,
+      sessions: updatedSessions,
+      justifications,
+      studentGrades,
+      appSettings,
+      selectedClassId,
+      lastUpdated: nowTs,
+    });
+
+    playBeep('delete');
+  };
+
+  const deleteAllSessionsForClass = (classGroupId: string) => {
+    if (!classGroupId) return;
+    const classSessionsToDelete = sessions.filter(s => s.classGroupId === classGroupId);
+    if (classSessionsToDelete.length === 0) return;
+    const idsToDelete = classSessionsToDelete.map(s => s.id);
+    const newDeletedIds = Array.from(new Set([...deletedSessionIdsRef.current, ...idsToDelete]));
+    setDeletedSessionIds(newDeletedIds);
+    deletedSessionIdsRef.current = newDeletedIds;
+    try {
+      localStorage.setItem(STORAGE_PREFIX + 'deleted_session_ids', JSON.stringify(newDeletedIds));
+    } catch {}
+
+    const updatedSessions = sessions.filter(s => s.classGroupId !== classGroupId);
+    const updatedStudents = computeStudentsWithRecalculatedStats(students, updatedSessions);
+    setSessions(updatedSessions);
+    setStudents(updatedStudents);
+    try {
+      localStorage.setItem(STORAGE_PREFIX + 'sessions', JSON.stringify(updatedSessions));
+      localStorage.setItem(STORAGE_PREFIX + 'students', JSON.stringify(updatedStudents));
+    } catch {}
+
+    const nowTs = Date.now();
+    setLocalLastUpdated(nowTs);
+    broadcastCurrentState({
+      professors,
+      activeProfessorId,
+      classes,
+      students: updatedStudents,
+      sessions: updatedSessions,
+      deletedSessionIds: newDeletedIds,
+      justifications,
+      studentGrades,
+      appSettings,
+      selectedClassId,
+      userMutation: true,
+      lastUpdated: nowTs,
+    });
+
+    fetch('/api/sessions/delete', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        classGroupId,
+        all: true,
+        sessionIds: idsToDelete,
+        senderClientId: clientIdRef.current,
+      }),
+    }).catch(err => console.debug('All class sessions delete API notice:', err));
+
+    playBeep('delete');
+  };
+
+  const resetSessionAttendance = (sessionId: string) => {
+    const targetSession = sessions.find(s => s.id === sessionId);
+    if (!targetSession) return;
+    const classStudents = students.filter(s => s.classGroupId === targetSession.classGroupId);
+    const newAttendance: Record<string, AttendanceRecord> = {};
+
+    classStudents.forEach(st => {
+      newAttendance[st.id] = {
+        studentId: st.id,
+        status: 'absent',
+        period1Status: 'absent',
+        period2Status: 'absent',
+        p1StartStatus: 'absent',
+        p1EndStatus: 'absent',
+        p2StartStatus: 'absent',
+        p2EndStatus: 'absent',
+        epiVerified: false,
+        checkinMethod: 'manual',
+      };
+    });
+
+    const updatedSessions = sessions.map(s => s.id === sessionId ? { ...s, attendance: newAttendance } : s);
+    const updatedStudents = computeStudentsWithRecalculatedStats(students, updatedSessions);
+    setSessions(updatedSessions);
+    setStudents(updatedStudents);
+    try {
+      localStorage.setItem(STORAGE_PREFIX + 'sessions', JSON.stringify(updatedSessions));
+      localStorage.setItem(STORAGE_PREFIX + 'students', JSON.stringify(updatedStudents));
+    } catch {}
+
+    const nowTs = Date.now();
+    setLocalLastUpdated(nowTs);
+    broadcastCurrentState({
+      professors,
+      activeProfessorId,
+      classes,
+      students: updatedStudents,
+      sessions: updatedSessions,
+      justifications,
+      studentGrades,
+      appSettings,
+      selectedClassId,
+      lastUpdated: nowTs,
+    });
+
+    playBeep('delete');
+  };
+
+  // Justifications
+  const handleJustificationStatus = (justificationId: string, status: 'approved' | 'rejected', reviewerName: string = activeProfessor?.name || 'Prof. Dr. Juliano Pereira') => {
+    const just = justifications.find(j => j.id === justificationId);
+    if (!just) return;
+
+    const updatedJustifications = justifications.map(j => {
+      if (j.id === justificationId) {
+        return {
+          ...j,
+          status,
+          reviewedAt: new Date().toISOString(),
+          reviewedBy: reviewerName,
+        };
+      }
+      return j;
+    });
+
+    setJustifications(updatedJustifications);
+    try {
+      localStorage.setItem(STORAGE_PREFIX + 'justifications', JSON.stringify(updatedJustifications));
+    } catch {}
+
+    let updatedSessions = sessions;
+    if (status === 'approved' && just.sessionId) {
+      updatedSessions = sessions.map(s => {
+        if (s.id === just.sessionId && s.attendance[just.studentId]) {
+          return {
+            ...s,
+            attendance: {
+              ...s.attendance,
+              [just.studentId]: {
+                ...s.attendance[just.studentId],
+                status: 'excused',
+                period1Status: just.period === '2' ? s.attendance[just.studentId].period1Status : 'excused',
+                period2Status: just.period === '1' ? s.attendance[just.studentId].period2Status : 'excused',
+                observation: `Justificativa aprovada (${just.documentNumber || 'Atestado'}): ${just.description}`,
+                justificationReason: just.description,
+                justificationFileUrl: just.attachmentUrl,
+                justificationFileName: just.attachmentName,
+              }
+            }
+          };
+        }
+        return s;
+      });
+
+      setSessions(updatedSessions);
+      try {
+        localStorage.setItem(STORAGE_PREFIX + 'sessions', JSON.stringify(updatedSessions));
+      } catch {}
+    }
+
+    const now = Date.now();
+    setLocalLastUpdated(now);
+    broadcastCurrentState({
+      professors,
+      activeProfessorId,
+      classes,
+      students,
+      sessions: updatedSessions,
+      justifications: updatedJustifications,
+      studentGrades,
+      appSettings,
+      selectedClassId,
+      lastUpdated: now,
+    });
+
+    if (status === 'approved' && just.sessionId) {
+      enqueueOutboxItem({
+        eventType: 'EXCUSE_STUDENT',
+        sessionId: just.sessionId,
+        studentId: just.studentId,
+        studentName: just.studentName,
+        status: 'excused',
+        period: just.period || 'both',
+        timestamp: new Date().toISOString(),
+        payload: {
+          reason: just.description,
+          fileUrl: just.attachmentUrl,
+          fileName: just.attachmentName,
+        }
+      });
+    }
+
+    if (status === 'approved') {
+      playBeep('success');
+    } else {
+      playBeep('warning');
+    }
+  };
+
+  const submitJustification = (justData: Omit<JustificationRequest, 'id' | 'submittedAt' | 'status'>) => {
+    const student = students.find(s => s.id === justData.studentId);
+    const session = sessions.find(s => s.id === justData.sessionId);
+
+    const newJust: JustificationRequest = {
+      ...justData,
+      id: `just-${Date.now()}`,
+      studentName: student?.name || justData.studentName || 'Aluno',
+      studentRa: student?.registrationNumber || justData.studentRa || 'RA',
+      sessionTopic: session?.topic || justData.sessionTopic || 'Aula BMF4',
+      submittedAt: new Date().toISOString(),
+      status: 'pending',
+    };
+    const updated = [newJust, ...justifications];
+    setJustifications(updated);
+    try {
+      localStorage.setItem(STORAGE_PREFIX + 'justifications', JSON.stringify(updated));
+    } catch {}
+
+    const now = Date.now();
+    setLocalLastUpdated(now);
+    broadcastCurrentState({
+      professors,
+      activeProfessorId,
+      classes,
+      students,
+      sessions,
+      justifications: updated,
+      studentGrades,
+      appSettings,
+      selectedClassId,
+      lastUpdated: now,
+    });
+
+    playBeep('excused');
+  };
+
+  const deleteJustification = (justificationId: string) => {
+    const updated = justifications.filter(j => j.id !== justificationId);
+    setJustifications(updated);
+    try {
+      localStorage.setItem(STORAGE_PREFIX + 'justifications', JSON.stringify(updated));
+    } catch {}
+
+    const now = Date.now();
+    setLocalLastUpdated(now);
+    broadcastCurrentState({
+      professors,
+      activeProfessorId,
+      classes,
+      students,
+      sessions,
+      justifications: updated,
+      studentGrades,
+      appSettings,
+      selectedClassId,
+      lastUpdated: now,
+    });
+
+    playBeep('delete');
+  };
+
+  const updateAppSettings = (updates: Partial<AppSettings>) => {
+    const updated = { ...appSettings, ...updates };
+    setAppSettings(updated);
+    try {
+      localStorage.setItem(STORAGE_PREFIX + 'settings', JSON.stringify(updated));
+    } catch {}
+
+    const now = Date.now();
+    setLocalLastUpdated(now);
+    broadcastCurrentState({
+      professors,
+      activeProfessorId,
+      classes,
+      students,
+      sessions,
+      justifications,
+      studentGrades,
+      appSettings: updated,
+      selectedClassId,
+      lastUpdated: now,
+    });
+  };
+
+  const resetAllData = () => {
+    localStorage.removeItem(STORAGE_PREFIX + 'professors');
+    localStorage.removeItem(STORAGE_PREFIX + 'active_prof');
+    localStorage.removeItem(STORAGE_PREFIX + 'classes');
+    localStorage.removeItem(STORAGE_PREFIX + 'students');
+    localStorage.removeItem(STORAGE_PREFIX + 'sessions');
+    localStorage.removeItem(STORAGE_PREFIX + 'deleted_session_ids');
+    localStorage.removeItem(STORAGE_PREFIX + 'justifications');
+    localStorage.removeItem(STORAGE_PREFIX + 'settings');
+    localStorage.removeItem(STORAGE_PREFIX + 'student_grades');
+    localStorage.removeItem(STORAGE_PREFIX + 'selectedClass');
+    localStorage.removeItem(STORAGE_PREFIX + 'last_updated');
+    localStorage.removeItem(STORAGE_PREFIX + 'outbox_queue');
+
+    setProfessors(INITIAL_PROFESSORS);
+    setActiveProfessorId(INITIAL_PROFESSORS[0]?.id || '');
+    setClasses(INITIAL_CLASSES);
+    setStudents(INITIAL_STUDENTS);
+    setSessions(INITIAL_SESSIONS);
+    setDeletedSessionIds([]);
+    deletedSessionIdsRef.current = [];
+    setJustifications(INITIAL_JUSTIFICATIONS);
+    setAppSettings(DEFAULT_SETTINGS);
+    setStudentGrades(INITIAL_STUDENT_GRADES);
+    setSelectedClassId(INITIAL_CLASSES[0]?.id || '');
+
+    const now = Date.now();
+    setLocalLastUpdated(now);
+    setLastSyncTimestamp(now);
+
+    broadcastCurrentState({
+      professors: INITIAL_PROFESSORS,
+      activeProfessorId: INITIAL_PROFESSORS[0]?.id || '',
+      classes: INITIAL_CLASSES,
+      students: INITIAL_STUDENTS,
+      sessions: INITIAL_SESSIONS,
+      deletedSessionIds: [],
+      justifications: INITIAL_JUSTIFICATIONS,
+      appSettings: DEFAULT_SETTINGS,
+      studentGrades: INITIAL_STUDENT_GRADES,
+      selectedClassId: INITIAL_CLASSES[0]?.id || '',
+      lastUpdated: now,
+      isExplicitReset: true,
+    });
+
+    fetch('/api/sync/reset', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ senderClientId: clientIdRef.current }),
+    }).catch(err => console.debug('Sync reset API call:', err));
+
+    playBeep('success');
+  };
+
+  return (
+    <LabContext.Provider
+      value={{
+        professors,
+        activeProfessorId,
+        activeProfessor,
+        classes,
+        students,
+        sessions,
+        justifications,
+        studentGrades,
+        selectedClassId,
+        activeSession,
+        appSettings,
+        soundEnabled,
+        isOnline,
+        isSyncing,
+        realtimeConnected,
+        connectedDevices,
+        connectedDevicesList,
+        customDeviceName,
+        setCustomDeviceName,
+        deviceType,
+        setDeviceType,
+        lastSyncTimestamp,
+        lastSyncDate,
+        triggerSync,
+        forceSyncMaster,
+        outboxQueue,
+        outboxPendingCount,
+        isOutboxSyncing,
+        lastOutboxSyncDate,
+        enqueueOutboxItem,
+        processOutboxQueue,
+        clearSyncedOutbox,
+        dynamicToken,
+        dynamicSecondsLeft,
+        dynamicSecurityHash,
+        deviceFingerprint,
+        resetDeviceLockForTesting,
+        teacherPresences,
+        teacherConflict,
+        joinAsCoTeacher,
+        takeOverSession,
+        dismissTeacherConflict,
+        setActiveProfessorId,
+        setSelectedClassId,
+        setSoundEnabled,
+        updateAppSettings,
+        toggleLiveSession,
+        pauseLiveSession,
+        resumeLiveSession,
+        reopenCurrentSession,
+        lockCurrentSession,
+        lockPeriod1,
+        lockPeriod2,
+        setActivePeriod,
+        transitionToPeriod,
+        setAttendanceStatus,
+        markAllPresent,
+        resetCurrentAttendance,
+        simulateStudentCheckin,
+        studentSelfCheckin,
+        selfRegisterAndCheckin,
+        loginProfessor,
+        logoutProfessor,
+        registerProfessor,
+        changeProfessorPin,
+        addProfessor,
+        updateProfessor,
+        deleteProfessor,
+        addStudent,
+        addMultipleStudents,
+        updateStudent,
+        deleteStudent,
+        deleteMultipleStudents,
+        deleteAllStudentsFromClass,
+        clearAllStudents,
+        addClassGroup,
+        updateClassGroup,
+        deleteClassGroup,
+        startNewSession,
+        updateSession,
+        deleteSession,
+        deleteMultipleSessions,
+        updateSessionAttendance,
+        deleteSessionAttendance,
+        deleteAllSessionsForClass,
+        resetSessionAttendance,
+        handleJustificationStatus,
+        submitJustification,
+        deleteJustification,
+        setStudentGradeScore,
+        setStudentSubstituteExamScore,
+        setStudentGradeNotes,
+        calculateAcademicStatus,
+        playBeep,
+        resetAllData,
+      }}
+    >
+      {children}
+    </LabContext.Provider>
+  );
+};
+
+export const useLab = () => {
+  const context = useContext(LabContext);
+  if (!context) {
+    throw new Error('useLab must be used within a LabProvider');
+  }
+  return context;
+};

@@ -1,0 +1,11 @@
+{
+  "name": "Controle de Presença - BMF3",
+  "description": "A streamlined React and TypeScript application for managing student roll calls and presence in anatomy laboratory sessions.",
+  "requestFramePermissions": [
+    "camera",
+    "geolocation"
+  ],
+  "majorCapabilities": [
+    "MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"
+  ]
+}
