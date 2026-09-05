@@ -539,24 +539,18 @@ export const LabProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
     const delProfSet = new Set(deletedProfList);
     parsed = (parsed || []).filter(p => p && p.id && !delProfSet.has(p.id));
     if (parsed.length === 0) {
-      parsed = [INITIAL_PROFESSORS[0]];
+      const nonDeletedInitial = INITIAL_PROFESSORS.find(p => !delProfSet.has(p.id));
+      parsed = [nonDeletedInitial || { ...INITIAL_PROFESSORS[0], id: 'prof-admin-default' }];
     }
     
-    // Ensure Prof. Juliano Pereira is the Administrator
-    let julianoProf = parsed.find(p => p.name.toLowerCase().includes('juliano'));
-    if (!julianoProf) {
-      const adminCandidate = parsed.find(p => p.role === 'admin' || p.id === 'prof-admin-1');
-      if (adminCandidate) {
-        adminCandidate.name = 'Prof. Dr. Juliano Pereira (Admin)';
-        adminCandidate.email = 'juliano.pereira@uni9.edu.br';
-        adminCandidate.role = 'admin';
-        if (!adminCandidate.pin) adminCandidate.pin = '1234';
-      } else {
-        parsed.unshift(INITIAL_PROFESSORS[0]);
-      }
-    } else {
-      julianoProf.role = 'admin';
-      if (!julianoProf.pin) julianoProf.pin = '1234';
+    // Ensure an Administrator exists among current professors
+    let adminCandidate = parsed.find(p => p.role === 'admin') || parsed.find(p => p.name.toLowerCase().includes('juliano'));
+    if (adminCandidate) {
+      adminCandidate.role = 'admin';
+      if (!adminCandidate.pin) adminCandidate.pin = '1234';
+    } else if (parsed.length > 0) {
+      parsed[0].role = 'admin';
+      if (!parsed[0].pin) parsed[0].pin = '1234';
     }
 
     // Ensure all professors have a default PIN
@@ -3080,14 +3074,36 @@ export const LabProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
   };
 
   // Student Self Check-in from Mobile Portal (Sem limite de tempo, encerramento exclusivo do professor)
-  const studentSelfCheckin = (registrationNumber: string, code: string, allowOtherClassConfirmation: boolean = false, preferredPeriod?: ClassPeriod) => {
-    // 1. Identify target live session (selected class, student's class, or any active live session in laboratory)
+  const studentSelfCheckin = (registrationNumber: string, code: string, allowOtherClassConfirmation: boolean = false, preferredPeriod?: ClassPeriod, targetSessionId?: string) => {
+    // 1. Identify target live session (explicit ID, selected class, student's class, or any active live session)
     let targetSession: LabSession | null = null;
     const cleanInputRa = normalizeRa(registrationNumber);
     const student = students.find(s => matchStudentRa(s.registrationNumber, cleanInputRa));
 
+    // Priority 0: Explicit Session ID from QR code / URL
+    if (targetSessionId) {
+      const explicitSession = sessions.find(s => s.id === targetSessionId);
+      if (explicitSession) {
+        if (explicitSession.isLocked || !explicitSession.isLive) {
+          // Check if there is a newer active session for this class
+          const newerActive = sessions.find(s => s.classGroupId === explicitSession.classGroupId && s.isLive && !s.isLocked);
+          if (newerActive) {
+            targetSession = newerActive;
+          } else {
+            return {
+              success: false,
+              message: 'A chamada desta aula já foi encerrada pelo professor.',
+              sessionLocked: true
+            };
+          }
+        } else {
+          targetSession = explicitSession;
+        }
+      }
+    }
+
     // Priority 1: Current active session if live & unlocked (primary focus of the lab/TV)
-    if (activeSession && activeSession.isLive && !activeSession.isLocked) {
+    if (!targetSession && activeSession && activeSession.isLive && !activeSession.isLocked) {
       targetSession = activeSession;
     }
 
@@ -3150,22 +3166,10 @@ export const LabProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
     }
 
     const currentPeriod = (preferredPeriod && !targetSession.isLocked ? preferredPeriod : (targetSession.activePeriod || '1')) as ClassPeriod;
-    if (currentPeriod === 'p1_start' && targetSession.isP1StartLocked) {
-      return { success: false, message: 'A chamada da 1ª Aula (Início) já foi encerrada pelo professor.', sessionLocked: true };
-    }
-    if (currentPeriod === 'p1_end' && targetSession.isP1EndLocked) {
-      return { success: false, message: 'A chamada da 1ª Aula (Final) já foi encerrada pelo professor.', sessionLocked: true };
-    }
-    if (currentPeriod === 'p2_start' && targetSession.isP2StartLocked) {
-      return { success: false, message: 'A chamada da 2ª Aula (Início) já foi encerrada pelo professor.', sessionLocked: true };
-    }
-    if (currentPeriod === 'p2_end' && targetSession.isP2EndLocked) {
-      return { success: false, message: 'A chamada da 2ª Aula (Final) já foi encerrada pelo professor.', sessionLocked: true };
-    }
-    if (currentPeriod === '1' && targetSession.isPeriod1Locked) {
+    if ((currentPeriod === 'p1_start' && targetSession.isP1StartLocked) || (currentPeriod === 'p1_end' && targetSession.isP1EndLocked) || (currentPeriod === '1' && targetSession.isPeriod1Locked)) {
       return { success: false, message: 'A chamada da 1ª Aula já foi encerrada pelo professor.', sessionLocked: true };
     }
-    if (currentPeriod === '2' && targetSession.isPeriod2Locked) {
+    if ((currentPeriod === 'p2_start' && targetSession.isP2StartLocked) || (currentPeriod === 'p2_end' && targetSession.isP2EndLocked) || (currentPeriod === '2' && targetSession.isPeriod2Locked)) {
       return { success: false, message: 'A chamada da 2ª Aula já foi encerrada pelo professor.', sessionLocked: true };
     }
 
@@ -3219,39 +3223,25 @@ export const LabProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
 
     const existingRec = targetSession.attendance[student.id];
 
-    // Marcar presença estritamente 1 vez por chamada / etapa ativa
+    // Intelligent period presence check: 1ª Aula, 2ª Aula, Integral
     let isAlreadyPresent = false;
     if (existingRec) {
-      if (currentPeriod === 'p1_start') {
-        if (existingRec.p1StartStatus === 'present' || existingRec.p1StartStatus === 'late') {
+      if (currentPeriod === '1' || currentPeriod === 'p1_start' || currentPeriod === 'p1_end') {
+        if (existingRec.period1Status === 'present' || existingRec.p1StartStatus === 'present' || existingRec.p1EndStatus === 'present') {
           isAlreadyPresent = true;
         }
-      } else if (currentPeriod === 'p1_end') {
-        if (existingRec.p1EndStatus === 'present' || existingRec.p1EndStatus === 'late') {
+      } else if (currentPeriod === '2' || currentPeriod === 'p2_start' || currentPeriod === 'p2_end') {
+        if (existingRec.period2Status === 'present' || existingRec.p2StartStatus === 'present' || existingRec.p2EndStatus === 'present') {
           isAlreadyPresent = true;
         }
-      } else if (currentPeriod === 'p2_start') {
-        if (existingRec.p2StartStatus === 'present' || existingRec.p2StartStatus === 'late') {
-          isAlreadyPresent = true;
-        }
-      } else if (currentPeriod === 'p2_end') {
-        if (existingRec.p2EndStatus === 'present' || existingRec.p2EndStatus === 'late') {
-          isAlreadyPresent = true;
-        }
-      } else if (currentPeriod === '1') {
-        if (existingRec.period1Status === 'present' && existingRec.p1StartStatus === 'present' && existingRec.p1EndStatus === 'present') {
-          isAlreadyPresent = true;
-        }
-      } else if (currentPeriod === '2') {
-        if (existingRec.period2Status === 'present' && existingRec.p2StartStatus === 'present' && existingRec.p2EndStatus === 'present') {
+      } else if (currentPeriod === 'both') {
+        const hasP1 = existingRec.period1Status === 'present' || existingRec.p1StartStatus === 'present';
+        const hasP2 = existingRec.period2Status === 'present' || existingRec.p2StartStatus === 'present';
+        if (hasP1 && hasP2) {
           isAlreadyPresent = true;
         }
       } else if (currentPeriod === 'activity_single') {
         if (existingRec.status === 'present' || existingRec.status === 'late') {
-          isAlreadyPresent = true;
-        }
-      } else if (currentPeriod === 'both') {
-        if (existingRec.status === 'present' && existingRec.period1Status === 'present' && existingRec.period2Status === 'present' && existingRec.p1StartStatus === 'present' && existingRec.p1EndStatus === 'present' && existingRec.p2StartStatus === 'present' && existingRec.p2EndStatus === 'present') {
           isAlreadyPresent = true;
         }
       }
@@ -3263,22 +3253,23 @@ export const LabProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
         || (currentPeriod === 'p1_end' && existingRec?.p1EndTimestamp)
         || (currentPeriod === 'p2_start' && existingRec?.p2StartTimestamp)
         || (currentPeriod === 'p2_end' && existingRec?.p2EndTimestamp)
+        || existingRec?.period1Timestamp
+        || existingRec?.period2Timestamp
         || existingRec?.timestamp 
-        || existingRec?.period1Timestamp 
         || timeStr;
 
-      const stageName = currentPeriod === 'p1_start' ? '1ª Aula (Início)'
-        : currentPeriod === 'p1_end' ? '1ª Aula (Final)'
-        : currentPeriod === 'p2_start' ? '2ª Aula (Início)'
-        : currentPeriod === 'p2_end' ? '2ª Aula (Final)'
-        : currentPeriod === '1' ? '1ª Aula'
-        : currentPeriod === '2' ? '2ª Aula'
+      const stageName = (currentPeriod === '1' || currentPeriod === 'p1_start' || currentPeriod === 'p1_end')
+        ? '1ª Aula'
+        : (currentPeriod === '2' || currentPeriod === 'p2_start' || currentPeriod === 'p2_end')
+        ? '2ª Aula'
+        : currentPeriod === 'both'
+        ? 'Chamada Integral (1ª e 2ª Aula)'
         : 'nesta chamada';
 
       return {
         success: false,
         alreadyPresent: true,
-        message: `Atenção: A presença de ${student.name} (RA: ${student.registrationNumber}) já foi registrada para ${stageName} às ${recordedTime}.`,
+        message: `Atenção: A presença de ${student.name} (RA: ${student.registrationNumber}) já foi confirmada para ${stageName} às ${recordedTime}.`,
         student,
         existingRecord: existingRec,
       };
@@ -3866,13 +3857,21 @@ export const LabProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
   };
 
   const deleteProfessor = (id: string): { success: boolean; message: string } => {
-    // Check if active professor is an Admin
-    const isCurrentAdmin = activeProfessor?.role === 'admin' || professors.length <= 1;
-    if (!isCurrentAdmin) {
+    if (professors.length <= 1) {
       playBeep('alert');
       return {
         success: false,
-        message: 'Acesso Negado: Apenas o Professor Admin (Responsável pelo Sistema) tem permissão para excluir docentes.'
+        message: 'Não é permitido excluir o único docente cadastrado no sistema.'
+      };
+    }
+
+    // Check if professor has an active live session
+    const hasLiveSession = sessions.some(s => s && s.professorId === id && s.isLive && !s.isLocked);
+    if (hasLiveSession) {
+      playBeep('alert');
+      return {
+        success: false,
+        message: 'Não é possível excluir o docente enquanto houver aula/chamada ao vivo em andamento vinculada a ele.'
       };
     }
 
@@ -3880,6 +3879,13 @@ export const LabProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
     setProfessors(remainingProfs);
     try {
       localStorage.setItem(STORAGE_PREFIX + 'professors', JSON.stringify(remainingProfs));
+    } catch {}
+
+    const newDeletedProfIds = Array.from(new Set([...deletedProfessorIdsRef.current, id]));
+    setDeletedProfessorIds(newDeletedProfIds);
+    deletedProfessorIdsRef.current = newDeletedProfIds;
+    try {
+      localStorage.setItem(STORAGE_PREFIX + 'deleted_professor_ids', JSON.stringify(newDeletedProfIds));
     } catch {}
 
     let nextActiveId = activeProfessorId;
@@ -3906,6 +3912,16 @@ export const LabProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
       localStorage.setItem(STORAGE_PREFIX + 'classes', JSON.stringify(updatedClasses));
     } catch {}
 
+    // Call server API for durable persistence
+    fetch('/api/professors/delete', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        professorId: id,
+        senderClientId: clientIdRef.current,
+      }),
+    }).catch(err => console.debug('Notice on delete professor api:', err));
+
     const now = Date.now();
     setLocalLastUpdated(now);
     broadcastCurrentState({
@@ -3914,17 +3930,19 @@ export const LabProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
       classes: updatedClasses,
       students,
       sessions,
+      deletedProfessorIds: newDeletedProfIds,
       justifications,
       studentGrades,
       appSettings,
       selectedClassId,
+      userMutation: true,
       lastUpdated: now,
     });
 
     playBeep('alert');
     return {
       success: true,
-      message: 'Docente excluído com sucesso.'
+      message: 'Docente excluído com sucesso do cadastro.'
     };
   };
 
@@ -4710,6 +4728,16 @@ export const LabProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
     const updatedStudents = computeStudentsWithRecalculatedStats(students, updatedSessions);
     setSessions(updatedSessions);
     setStudents(updatedStudents);
+
+    // Clean outboxQueue of any checkins belonging to this deleted session
+    setOutboxQueue(prev => {
+      const filtered = prev.filter(item => !item.data || (item.data.sessionId !== sessionId && !newDeletedIds.includes(item.data.sessionId)));
+      try {
+        localStorage.setItem(STORAGE_PREFIX + 'outbox_queue', JSON.stringify(filtered));
+      } catch {}
+      return filtered;
+    });
+
     try {
       localStorage.setItem(STORAGE_PREFIX + 'sessions', JSON.stringify(updatedSessions));
       localStorage.setItem(STORAGE_PREFIX + 'students', JSON.stringify(updatedStudents));
@@ -5079,6 +5107,16 @@ export const LabProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
     const updatedStudents = computeStudentsWithRecalculatedStats(students, updatedSessions);
     setSessions(updatedSessions);
     setStudents(updatedStudents);
+
+    // Clean outboxQueue of any checkins belonging to deleted sessions of this class
+    setOutboxQueue(prev => {
+      const filtered = prev.filter(item => !item.data || (!idsToDelete.includes(item.data.sessionId) && !newDeletedIds.includes(item.data.sessionId)));
+      try {
+        localStorage.setItem(STORAGE_PREFIX + 'outbox_queue', JSON.stringify(filtered));
+      } catch {}
+      return filtered;
+    });
+
     try {
       localStorage.setItem(STORAGE_PREFIX + 'sessions', JSON.stringify(updatedSessions));
       localStorage.setItem(STORAGE_PREFIX + 'students', JSON.stringify(updatedStudents));

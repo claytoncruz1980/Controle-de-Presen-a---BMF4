@@ -29,7 +29,11 @@ import {
   ArrowRight,
   Info,
   SlidersHorizontal,
-  RotateCcw
+  RotateCcw,
+  Printer,
+  ExternalLink,
+  QrCode,
+  FolderOpen
 } from 'lucide-react';
 import { useLab } from '../context/LabContext';
 import { ActivityType, ActivityCategory, LabSession, Student } from '../types';
@@ -62,7 +66,13 @@ export const ReportsView: React.FC = () => {
   const [activityCategoryFilter, setActivityCategoryFilter] = useState<'all' | 'teorica' | 'pratica' | 'atividade'>('all');
   const [searchTerm, setSearchTerm] = useState('');
   
-  // Modals, Deletion & Selection state
+  // Modals, Deletion, Call In-App Viewer & Selection state
+  const [viewingSessionModal, setViewingSessionModal] = useState<LabSession | null>(null);
+  const [modalStudentSearch, setModalStudentSearch] = useState('');
+  const [modalStatusFilter, setModalStatusFilter] = useState<'all' | 'present' | 'absent'>('all');
+  const [detailStudentSearch, setDetailStudentSearch] = useState('');
+  const [detailStatusFilter, setDetailStatusFilter] = useState<'all' | 'present' | 'absent'>('all');
+
   const [selectedStudentHistory, setSelectedStudentHistory] = useState<Student | null>(null);
   const [deletingSessionId, setDeletingSessionId] = useState<string | null>(null);
   const [selectedSessionIds, setSelectedSessionIds] = useState<string[]>([]);
@@ -246,6 +256,113 @@ export const ReportsView: React.FC = () => {
     }
   };
 
+  // Helper function to calculate comprehensive stats for a single call/session
+  const getSessionStats = (session: LabSession | null) => {
+    if (!session || classStudents.length === 0) {
+      return { total: classStudents.length, p1Count: 0, p2Count: 0, overallPresentCount: 0, absentCount: classStudents.length, rate: 0 };
+    }
+    let p1Count = 0;
+    let p2Count = 0;
+    let overallPresentCount = 0;
+
+    classStudents.forEach(st => {
+      const rec = session.attendance?.[st.id];
+      const isP1 = rec?.period1Status === 'present' || rec?.p1StartStatus === 'present' || rec?.p1EndStatus === 'present';
+      const isP2 = rec?.period2Status === 'present' || rec?.p2StartStatus === 'present' || rec?.p2EndStatus === 'present';
+      const isOverall = rec?.status === 'present' || rec?.status === 'late' || rec?.status === 'excused' || isP1 || isP2;
+
+      if (isP1) p1Count++;
+      if (isP2) p2Count++;
+      if (isOverall) overallPresentCount++;
+    });
+
+    const total = classStudents.length;
+    const absentCount = Math.max(0, total - overallPresentCount);
+    const rate = total > 0 ? Math.round((overallPresentCount / total) * 100) : 0;
+
+    return { total, p1Count, p2Count, overallPresentCount, absentCount, rate };
+  };
+
+  // Filtered students for in-app Call History modal
+  const modalDisplayedStudents = useMemo(() => {
+    if (!viewingSessionModal) return [];
+    return classStudents.filter(st => {
+      if (modalStudentSearch.trim()) {
+        const query = modalStudentSearch.toLowerCase().trim();
+        const matches = st.name.toLowerCase().includes(query) || st.registrationNumber.toLowerCase().includes(query);
+        if (!matches) return false;
+      }
+      if (modalStatusFilter !== 'all') {
+        const rec = viewingSessionModal.attendance?.[st.id];
+        const isPresent = rec?.status === 'present' || 
+          rec?.period1Status === 'present' || 
+          rec?.period2Status === 'present' || 
+          rec?.p1StartStatus === 'present' || 
+          rec?.p1EndStatus === 'present' || 
+          rec?.p2StartStatus === 'present' || 
+          rec?.p2EndStatus === 'present' ||
+          rec?.status === 'late' ||
+          rec?.status === 'excused';
+        if (modalStatusFilter === 'present' && !isPresent) return false;
+        if (modalStatusFilter === 'absent' && isPresent) return false;
+      }
+      return true;
+    });
+  }, [viewingSessionModal, classStudents, modalStudentSearch, modalStatusFilter]);
+
+  // Filtered students for detailed session tab view
+  const detailDisplayedStudents = useMemo(() => {
+    if (!activeDetailSession) return classStudents;
+    return classStudents.filter(st => {
+      if (detailStudentSearch.trim()) {
+        const query = detailStudentSearch.toLowerCase().trim();
+        const matches = st.name.toLowerCase().includes(query) || st.registrationNumber.toLowerCase().includes(query);
+        if (!matches) return false;
+      }
+      if (detailStatusFilter !== 'all') {
+        const rec = activeDetailSession.attendance?.[st.id];
+        const isPresent = rec?.status === 'present' || 
+          rec?.period1Status === 'present' || 
+          rec?.period2Status === 'present' || 
+          rec?.p1StartStatus === 'present' || 
+          rec?.p1EndStatus === 'present' || 
+          rec?.p2StartStatus === 'present' || 
+          rec?.p2EndStatus === 'present' ||
+          rec?.status === 'late' ||
+          rec?.status === 'excused';
+        if (detailStatusFilter === 'present' && !isPresent) return false;
+        if (detailStatusFilter === 'absent' && isPresent) return false;
+      }
+      return true;
+    });
+  }, [activeDetailSession, classStudents, detailStudentSearch, detailStatusFilter]);
+
+  // Export single session to Excel
+  const handleExportSingleSession = async (session: LabSession) => {
+    if (!selectedClass) return;
+    const stats = getSessionStats(session);
+    try {
+      await exportModernAttendanceExcel({
+        selectedClass,
+        students: classStudents,
+        sessions: [session],
+        activeProfessor: session.professorName ? { id: '', name: session.professorName, email: '', isCoordinator: false } : activeProfessor,
+        overallStats: {
+          avgRate: stats.rate,
+          totalPresences: stats.overallPresentCount,
+          totalAbsences: stats.absentCount,
+          totalExcused: 0,
+          atRiskCount: 0
+        }
+      });
+      playBeep('success');
+      showToast(`Planilha da chamada (${formatDateDisplay(session.date)}) exportada com sucesso!`);
+    } catch (err) {
+      console.error('Erro ao exportar chamada individual:', err);
+      showToast('Erro ao exportar planilha da chamada.');
+    }
+  };
+
   // Modern, Structured, Styled Excel (.xlsx) Export with filtered sessions & dates
   const handleExportModernExcel = async () => {
     if (!selectedClass) return;
@@ -331,6 +448,49 @@ export const ReportsView: React.FC = () => {
     } catch {
       return dateStr;
     }
+  };
+
+  // Format the call time range (e.g., "07:30 às 12:00")
+  const getSessionTimeDisplay = (session?: LabSession | null): string => {
+    if (!session) return '--:--';
+    if (session.startTime) {
+      if (session.endTime && session.endTime !== session.startTime) {
+        return `${session.startTime} às ${session.endTime}`;
+      }
+      return `${session.startTime}`;
+    }
+    if (session.openedAt) {
+      try {
+        const openTime = new Date(session.openedAt).toLocaleTimeString('pt-BR', { hour: '2-digit', minute: '2-digit' });
+        if (session.closedAt) {
+          const closeTime = new Date(session.closedAt).toLocaleTimeString('pt-BR', { hour: '2-digit', minute: '2-digit' });
+          return `${openTime} às ${closeTime}`;
+        }
+        return `${openTime}`;
+      } catch {
+        // fallback
+      }
+    }
+    return '07:30 às 12:00';
+  };
+
+  // Short format for badges / compact tags (e.g., "07:30 - 12:00")
+  const getSessionTimeShort = (session?: LabSession | null): string => {
+    if (!session) return '--:--';
+    if (session.startTime) {
+      if (session.endTime && session.endTime !== session.startTime) {
+        return `${session.startTime} - ${session.endTime}`;
+      }
+      return session.startTime;
+    }
+    if (session.openedAt) {
+      try {
+        return new Date(session.openedAt).toLocaleTimeString('pt-BR', { hour: '2-digit', minute: '2-digit' });
+      } catch {
+        // fallback
+      }
+    }
+    return '07:30';
   };
 
   return (
@@ -437,7 +597,7 @@ export const ReportsView: React.FC = () => {
             }`}
           >
             <Clock className="w-3.5 h-3.5" />
-            <span>Relatório de Horários por Chamada</span>
+            <span>Espelho & Horários da Chamada</span>
           </button>
 
           <button
@@ -448,8 +608,8 @@ export const ReportsView: React.FC = () => {
                 : 'bg-slate-100 text-slate-600 hover:bg-slate-200'
             }`}
           >
-            <Trash2 className="w-3.5 h-3.5 text-rose-400" />
-            <span>Gerenciar / Excluir Chamadas</span>
+            <FolderOpen className="w-3.5 h-3.5 text-sky-400" />
+            <span>Histórico de Chamadas</span>
             <span className="px-1.5 py-0.2 bg-slate-800 text-slate-300 text-[10px] rounded-full font-bold">
               {classSessions.length}
             </span>
@@ -948,10 +1108,11 @@ export const ReportsView: React.FC = () => {
         <div className="space-y-4">
           <div className="bg-white rounded-3xl p-4 sm:p-6 border border-slate-200/90 shadow-xs space-y-4">
             
+            {/* Header: Selection & Session Info & Actions */}
             <div className="flex flex-col md:flex-row md:items-center justify-between gap-3 border-b border-slate-100 pb-4">
               <div className="space-y-1">
                 <label className="text-[11px] font-bold text-slate-500 uppercase tracking-wider block">
-                  Selecione a Data / Aula para Ver o Relatório Detalhado de Horários:
+                  Selecione a Data / Aula para Ver o Espelho Detalhado:
                 </label>
                 <select
                   value={activeDetailSession?.id || ''}
@@ -960,16 +1121,20 @@ export const ReportsView: React.FC = () => {
                 >
                   {classSessions.map(s => (
                     <option key={s.id} value={s.id}>
-                      {formatDateDisplay(s.date)} — {s.topic} {s.labLocation ? `[${s.labLocation === 'anatomia' ? 'Lab. Anatomia' : 'Lab. Histologia'}]` : ''} ({s.activityCategory === 'atividade' || s.activityType?.startsWith('atividade') ? 'Atividade' : 'Aula Teórica/Prática'})
+                      {formatDateDisplay(s.date)} [{getSessionTimeShort(s)}] — {s.topic} {s.labLocation ? `[${s.labLocation === 'anatomia' ? 'Lab. Anatomia' : 'Lab. Histologia'}]` : ''} ({s.activityCategory === 'atividade' || s.activityType?.startsWith('atividade') ? 'Atividade' : 'Aula Teórica/Prática'})
                     </option>
                   ))}
                 </select>
               </div>
 
               {activeDetailSession && (
-                <div className="flex items-center gap-2 flex-wrap">
+                <div className="flex items-center gap-2 flex-wrap self-end md:self-auto">
+                  <span className="px-3 py-1.5 rounded-xl bg-sky-50 border border-sky-200 text-xs font-bold text-sky-800 flex items-center gap-1.5">
+                    <Clock className="w-3.5 h-3.5 text-sky-600" />
+                    <span>Horário da Chamada: <strong className="font-mono">{getSessionTimeDisplay(activeDetailSession)}</strong></span>
+                  </span>
                   <span className="px-3 py-1.5 rounded-xl bg-slate-100 border border-slate-200 text-xs font-bold text-slate-700">
-                    Docente: {activeDetailSession.professorName}
+                    Docente: {activeDetailSession.professorName || 'Não especificado'}
                   </span>
                   {activeDetailSession.labLocation && (
                     <span className={`px-3 py-1.5 rounded-xl text-xs font-extrabold border ${
@@ -987,159 +1152,308 @@ export const ReportsView: React.FC = () => {
                   }`}>
                     {activeDetailSession.activityCategory === 'atividade' || activeDetailSession.activityType?.startsWith('atividade')
                       ? 'Atividade (Chamada Única)'
-                      : 'Aula Teórica / Prática (4 Checkpoints)'}
+                      : 'Aula Teórica / Prática (1ª e 2ª Aulas)'}
                   </span>
+
+                  {/* Actions for this session */}
+                  <button
+                    onClick={() => handleExportSingleSession(activeDetailSession)}
+                    className="px-3.5 py-1.5 rounded-xl bg-emerald-600 hover:bg-emerald-700 text-white text-xs font-bold shadow-xs flex items-center gap-1.5 transition-all active:scale-95 cursor-pointer"
+                    title="Exportar esta chamada individual para Excel (.xlsx)"
+                  >
+                    <FileSpreadsheet className="w-3.5 h-3.5" />
+                    <span>Exportar (.xlsx)</span>
+                  </button>
+
+                  <button
+                    onClick={() => window.print()}
+                    className="px-3 py-1.5 rounded-xl bg-slate-100 hover:bg-slate-200 text-slate-700 text-xs font-bold border border-slate-200 flex items-center gap-1.5 transition-colors cursor-pointer"
+                    title="Imprimir espelho desta chamada"
+                  >
+                    <Printer className="w-3.5 h-3.5" />
+                    <span>Imprimir</span>
+                  </button>
                 </div>
               )}
             </div>
 
-            {activeDetailSession ? (
-              <div className="space-y-4">
-                <div className="overflow-x-auto w-full max-w-full border border-slate-100 rounded-2xl">
-                  <table className="w-full text-left text-xs border-collapse min-w-[700px]">
-                    <thead>
-                      <tr className="bg-slate-50 border-b border-slate-200 text-slate-600 font-bold uppercase text-[10px] tracking-wider">
-                        <th className="py-3 px-3.5 w-12 text-center">Nº</th>
-                        <th className="py-3 px-3.5">Aluno</th>
-                        <th className="py-3 px-3.5">RA</th>
-                        {activeDetailSession.activityCategory === 'atividade' || activeDetailSession.activityType?.startsWith('atividade') ? (
-                          <>
-                            <th className="py-3 px-3.5 text-center">Horário de Presença</th>
-                            <th className="py-3 px-3.5 text-center">Status</th>
-                            <th className="py-3 px-3.5 text-center">Método</th>
-                          </>
-                        ) : (
-                          <>
-                            <th className="py-3 px-3.5 text-center">1ª Aula (Início)</th>
-                            <th className="py-3 px-3.5 text-center">1ª Aula (Final)</th>
-                            <th className="py-3 px-3.5 text-center">2ª Aula (Início)</th>
-                            <th className="py-3 px-3.5 text-center">2ª Aula (Final)</th>
-                            <th className="py-3 px-3.5 text-center">Status Geral</th>
-                            <th className="py-3 px-3.5 text-center">Método</th>
-                          </>
-                        )}
-                      </tr>
-                    </thead>
-                    <tbody className="divide-y divide-slate-100">
-                      {classStudents.map((st, idx) => {
-                        const rec = activeDetailSession.attendance?.[st.id];
-                        const isPres = rec?.status === 'present' || rec?.status === 'late';
-                        const p1Start = rec?.p1StartStatus || (rec?.period1Status === 'present' ? 'present' : 'absent');
-                        const p1End = rec?.p1EndStatus || (rec?.period1Status === 'present' ? 'present' : 'absent');
-                        const p2Start = rec?.p2StartStatus || (rec?.period2Status === 'present' ? 'present' : 'absent');
-                        const p2End = rec?.p2EndStatus || (rec?.period2Status === 'present' ? 'present' : 'absent');
-                        const overall = rec?.status || 'absent';
-                        const isActivity = activeDetailSession.activityCategory === 'atividade' || activeDetailSession.activityType?.startsWith('atividade');
-
-                        return (
-                          <tr key={st.id} className="hover:bg-slate-50/60 transition-colors">
-                            <td className="py-3 px-3.5 text-center font-mono text-slate-400 font-bold text-[11px]">
-                              {String(idx + 1).padStart(2, '0')}
-                            </td>
-                            <td className="py-3 px-3.5 font-bold text-slate-900">
-                              {st.name}
-                            </td>
-                            <td className="py-3 px-3.5 font-mono text-slate-600">
-                              {st.registrationNumber}
-                            </td>
-
-                            {isActivity ? (
-                              <>
-                                <td className="py-3 px-3.5 text-center font-mono font-bold">
-                                  {rec?.timestamp || rec?.p1StartTimestamp ? (
-                                    <span className="px-2.5 py-1 rounded-lg bg-emerald-50 text-emerald-800 border border-emerald-200">
-                                      {rec.timestamp || rec.p1StartTimestamp}
-                                    </span>
-                                  ) : (
-                                    <span className="text-slate-400">-</span>
-                                  )}
-                                </td>
-                                <td className="py-3 px-3.5 text-center">
-                                  <span className={`px-2.5 py-1 rounded-full text-[10px] font-extrabold uppercase ${
-                                    overall === 'present' ? 'bg-emerald-100 text-emerald-800' : 'bg-rose-100 text-rose-800'
-                                  }`}>
-                                    {overall === 'present' ? 'Presente' : 'Falta'}
-                                  </span>
-                                </td>
-                                <td className="py-3 px-3.5 text-center text-slate-500 font-medium">
-                                  {rec?.checkinMethod === 'qrcode' ? 'QR Code' : 'Manual'}
-                                </td>
-                              </>
-                            ) : (
-                              <>
-                                <td className="py-3 px-3.5 text-center">
-                                  <div className="flex flex-col items-center">
-                                    <span className={`px-2 py-0.5 rounded text-[10px] font-bold ${
-                                      p1Start === 'present' ? 'bg-emerald-50 text-emerald-700 border border-emerald-200' : 'bg-rose-50 text-rose-700 border border-rose-200'
-                                    }`}>
-                                      {p1Start === 'present' ? 'Presente' : 'Falta'}
-                                    </span>
-                                    {rec?.p1StartTimestamp && (
-                                      <span className="text-[10px] font-mono text-slate-500">{rec.p1StartTimestamp}</span>
-                                    )}
-                                  </div>
-                                </td>
-
-                                <td className="py-3 px-3.5 text-center">
-                                  <div className="flex flex-col items-center">
-                                    <span className={`px-2 py-0.5 rounded text-[10px] font-bold ${
-                                      p1End === 'present' ? 'bg-teal-50 text-teal-700 border border-teal-200' : 'bg-rose-50 text-rose-700 border border-rose-200'
-                                    }`}>
-                                      {p1End === 'present' ? 'Presente' : 'Falta'}
-                                    </span>
-                                    {rec?.p1EndTimestamp && (
-                                      <span className="text-[10px] font-mono text-slate-500">{rec.p1EndTimestamp}</span>
-                                    )}
-                                  </div>
-                                </td>
-
-                                <td className="py-3 px-3.5 text-center">
-                                  <div className="flex flex-col items-center">
-                                    <span className={`px-2 py-0.5 rounded text-[10px] font-bold ${
-                                      p2Start === 'present' ? 'bg-indigo-50 text-indigo-700 border border-indigo-200' : 'bg-rose-50 text-rose-700 border border-rose-200'
-                                    }`}>
-                                      {p2Start === 'present' ? 'Presente' : 'Falta'}
-                                    </span>
-                                    {rec?.p2StartTimestamp && (
-                                      <span className="text-[10px] font-mono text-slate-500">{rec.p2StartTimestamp}</span>
-                                    )}
-                                  </div>
-                                </td>
-
-                                <td className="py-3 px-3.5 text-center">
-                                  <div className="flex flex-col items-center">
-                                    <span className={`px-2 py-0.5 rounded text-[10px] font-bold ${
-                                      p2End === 'present' ? 'bg-purple-50 text-purple-700 border border-purple-200' : 'bg-rose-50 text-rose-700 border border-rose-200'
-                                    }`}>
-                                      {p2End === 'present' ? 'Presente' : 'Falta'}
-                                    </span>
-                                    {rec?.p2EndTimestamp && (
-                                      <span className="text-[10px] font-mono text-slate-500">{rec.p2EndTimestamp}</span>
-                                    )}
-                                  </div>
-                                </td>
-
-                                <td className="py-3 px-3.5 text-center">
-                                  <span className={`px-2.5 py-1 rounded-full text-[10px] font-extrabold uppercase ${
-                                    overall === 'present' ? 'bg-emerald-100 text-emerald-800' : 'bg-rose-100 text-rose-800'
-                                  }`}>
-                                    {overall === 'present' ? 'Presente' : 'Falta'}
-                                  </span>
-                                </td>
-
-                                <td className="py-3 px-3.5 text-center text-slate-500 font-medium">
-                                  {rec?.checkinMethod === 'qrcode' ? 'QR Code' : 'Manual'}
-                                </td>
-                              </>
-                            )}
-                          </tr>
-                        );
-                      })}
-                    </tbody>
-                  </table>
+            {/* Quick Session Select Chips */}
+            {classSessions.length > 1 && (
+              <div className="space-y-1.5">
+                <span className="text-[10px] font-bold text-slate-400 uppercase tracking-wider block">
+                  Aulas e Chamadas Desta Turma (Clique para alternar):
+                </span>
+                <div className="flex items-center gap-1.5 overflow-x-auto pb-1 max-w-full">
+                  {classSessions.map(s => {
+                    const isCurrent = s.id === activeDetailSession?.id;
+                    return (
+                      <button
+                        key={s.id}
+                        onClick={() => setSelectedSessionDetailId(s.id)}
+                        className={`px-3 py-1 rounded-xl text-xs font-bold whitespace-nowrap transition-all cursor-pointer shrink-0 flex items-center gap-1.5 ${
+                          isCurrent
+                            ? 'bg-sky-600 text-white shadow-xs'
+                            : 'bg-slate-100 text-slate-600 hover:bg-slate-200 border border-slate-200/70'
+                        }`}
+                      >
+                        <span>{formatDateDisplay(s.date)}</span>
+                        <span className="text-[10px] font-mono opacity-85 flex items-center gap-0.5">
+                          <Clock className="w-2.5 h-2.5" />
+                          {getSessionTimeShort(s)}
+                        </span>
+                        <span className="text-[10px] opacity-80 max-w-[100px] truncate">{s.topic}</span>
+                      </button>
+                    );
+                  })}
                 </div>
               </div>
-            ) : (
+            )}
+
+            {activeDetailSession ? (() => {
+              const stats = getSessionStats(activeDetailSession);
+              const isActivity = activeDetailSession.activityCategory === 'atividade' || activeDetailSession.activityType?.startsWith('atividade');
+
+              return (
+                <div className="space-y-4">
+                  {/* KPI metric strip for this specific session */}
+                  <div className="grid grid-cols-2 sm:grid-cols-5 gap-2.5">
+                    <div className="p-3 rounded-2xl bg-sky-50/70 border border-sky-200/80 shadow-2xs">
+                      <span className="text-[10px] font-bold text-sky-800 uppercase tracking-wider block">Horário da Chamada</span>
+                      <div className="flex items-center gap-1 mt-0.5">
+                        <Clock className="w-4 h-4 text-sky-600 shrink-0" />
+                        <span className="text-xs sm:text-sm font-black text-slate-900 font-mono truncate">{getSessionTimeDisplay(activeDetailSession)}</span>
+                      </div>
+                    </div>
+
+                    <div className="p-3 rounded-2xl bg-slate-50 border border-slate-200/90 shadow-2xs">
+                      <span className="text-[10px] font-bold text-slate-500 uppercase tracking-wider block">Total de Alunos</span>
+                      <div className="flex items-baseline gap-1 mt-0.5">
+                        <span className="text-xl font-black text-slate-900">{stats.total}</span>
+                        <span className="text-[11px] text-slate-400 font-semibold">matriculados</span>
+                      </div>
+                    </div>
+
+                    <div className="p-3 rounded-2xl bg-slate-50 border border-slate-200/90 shadow-2xs">
+                      <span className="text-[10px] font-bold text-slate-500 uppercase tracking-wider block">1ª Aula</span>
+                      <div className="flex items-baseline gap-1 mt-0.5">
+                        <span className="text-xl font-black text-emerald-700">{stats.p1Count}</span>
+                        <span className="text-[11px] text-emerald-600 font-bold">
+                          ({stats.total > 0 ? Math.round((stats.p1Count / stats.total) * 100) : 0}%)
+                        </span>
+                      </div>
+                    </div>
+
+                    <div className="p-3 rounded-2xl bg-slate-50 border border-slate-200/90 shadow-2xs">
+                      <span className="text-[10px] font-bold text-slate-500 uppercase tracking-wider block">2ª Aula</span>
+                      <div className="flex items-baseline gap-1 mt-0.5">
+                        <span className="text-xl font-black text-sky-700">{stats.p2Count}</span>
+                        <span className="text-[11px] text-sky-600 font-bold">
+                          ({stats.total > 0 ? Math.round((stats.p2Count / stats.total) * 100) : 0}%)
+                        </span>
+                      </div>
+                    </div>
+
+                    <div className="p-3 rounded-2xl bg-slate-50 border border-slate-200/90 shadow-2xs">
+                      <span className="text-[10px] font-bold text-slate-500 uppercase tracking-wider block">Frequência da Aula</span>
+                      <div className="flex items-baseline gap-1 mt-0.5">
+                        <span className="text-xl font-black text-slate-900">{stats.rate}%</span>
+                        <span className="text-[11px] text-rose-600 font-bold">({stats.absentCount} faltas)</span>
+                      </div>
+                    </div>
+                  </div>
+
+                  {/* Filter Toolbar within the session view */}
+                  <div className="flex flex-col sm:flex-row items-stretch sm:items-center justify-between gap-2.5 pt-1">
+                    <div className="relative flex-1 min-w-[200px]">
+                      <Search className="w-4 h-4 text-slate-400 absolute left-3 top-1/2 -translate-y-1/2" />
+                      <input
+                        type="text"
+                        placeholder="Buscar aluno por nome ou RA nesta chamada..."
+                        value={detailStudentSearch}
+                        onChange={(e) => setDetailStudentSearch(e.target.value)}
+                        className="w-full pl-9 pr-3 py-1.5 rounded-xl bg-slate-50 border border-slate-200 text-xs font-medium text-slate-800 focus:outline-none focus:ring-2 focus:ring-sky-500"
+                      />
+                    </div>
+
+                    <div className="flex items-center gap-1.5 self-end sm:self-auto">
+                      <button
+                        onClick={() => setDetailStatusFilter('all')}
+                        className={`px-3 py-1.5 rounded-xl text-xs font-bold transition-colors cursor-pointer ${
+                          detailStatusFilter === 'all'
+                            ? 'bg-slate-900 text-white shadow-xs'
+                            : 'bg-slate-100 text-slate-600 hover:bg-slate-200'
+                        }`}
+                      >
+                        Todos ({stats.total})
+                      </button>
+                      <button
+                        onClick={() => setDetailStatusFilter('present')}
+                        className={`px-3 py-1.5 rounded-xl text-xs font-bold transition-colors cursor-pointer ${
+                          detailStatusFilter === 'present'
+                            ? 'bg-emerald-600 text-white shadow-xs'
+                            : 'bg-emerald-50 text-emerald-800 hover:bg-emerald-100'
+                        }`}
+                      >
+                        Presentes ({stats.overallPresentCount})
+                      </button>
+                      <button
+                        onClick={() => setDetailStatusFilter('absent')}
+                        className={`px-3 py-1.5 rounded-xl text-xs font-bold transition-colors cursor-pointer ${
+                          detailStatusFilter === 'absent'
+                            ? 'bg-rose-600 text-white shadow-xs'
+                            : 'bg-rose-50 text-rose-800 hover:bg-rose-100'
+                        }`}
+                      >
+                        Faltas ({stats.absentCount})
+                      </button>
+                    </div>
+                  </div>
+
+                  {/* Students Table */}
+                  <div className="overflow-x-auto w-full max-w-full border border-slate-100 rounded-2xl">
+                    <table className="w-full text-left text-xs border-collapse min-w-[700px]">
+                      <thead>
+                        <tr className="bg-slate-50 border-b border-slate-200 text-slate-600 font-bold uppercase text-[10px] tracking-wider">
+                          <th className="py-3 px-3.5 w-12 text-center">Nº</th>
+                          <th className="py-3 px-3.5">Aluno</th>
+                          <th className="py-3 px-3.5">RA</th>
+                          {isActivity ? (
+                            <>
+                              <th className="py-3 px-3.5 text-center">Horário de Presença</th>
+                              <th className="py-3 px-3.5 text-center">Status</th>
+                              <th className="py-3 px-3.5 text-center">Método</th>
+                            </>
+                          ) : (
+                            <>
+                              <th className="py-3 px-3.5 text-center">1ª Aula</th>
+                              <th className="py-3 px-3.5 text-center">2ª Aula</th>
+                              <th className="py-3 px-3.5 text-center">Status Geral</th>
+                              <th className="py-3 px-3.5 text-center">Método</th>
+                            </>
+                          )}
+                        </tr>
+                      </thead>
+                      <tbody className="divide-y divide-slate-100">
+                        {detailDisplayedStudents.length === 0 ? (
+                          <tr>
+                            <td colSpan={6} className="py-8 text-center text-slate-400 text-xs">
+                              Nenhum aluno encontrado para os filtros selecionados.
+                            </td>
+                          </tr>
+                        ) : (
+                          detailDisplayedStudents.map((st, idx) => {
+                            const rec = activeDetailSession.attendance?.[st.id];
+                            const p1Start = rec?.p1StartStatus || (rec?.period1Status === 'present' ? 'present' : 'absent');
+                            const p1End = rec?.p1EndStatus || (rec?.period1Status === 'present' ? 'present' : 'absent');
+                            const p2Start = rec?.p2StartStatus || (rec?.period2Status === 'present' ? 'present' : 'absent');
+                            const p2End = rec?.p2EndStatus || (rec?.period2Status === 'present' ? 'present' : 'absent');
+                            const isP1 = rec?.period1Status === 'present' || p1Start === 'present' || p1End === 'present';
+                            const isP2 = rec?.period2Status === 'present' || p2Start === 'present' || p2End === 'present';
+                            const isLate = rec?.status === 'late' || rec?.period1Status === 'late' || rec?.period2Status === 'late';
+                            const isExcused = rec?.status === 'excused' || rec?.period1Status === 'excused' || rec?.period2Status === 'excused';
+                            const overall = rec?.status === 'present' || isP1 || isP2 ? 'present' : isLate ? 'late' : isExcused ? 'excused' : 'absent';
+
+                            return (
+                              <tr key={st.id} className="hover:bg-slate-50/60 transition-colors">
+                                <td className="py-3 px-3.5 text-center font-mono text-slate-400 font-bold text-[11px]">
+                                  {String(idx + 1).padStart(2, '0')}
+                                </td>
+                                <td className="py-3 px-3.5 font-bold text-slate-900">
+                                  {st.name}
+                                </td>
+                                <td className="py-3 px-3.5 font-mono text-slate-600">
+                                  {st.registrationNumber}
+                                </td>
+
+                                {isActivity ? (
+                                  <>
+                                    <td className="py-3 px-3.5 text-center font-mono font-bold">
+                                      {rec?.timestamp || rec?.p1StartTimestamp ? (
+                                        <span className="px-2.5 py-1 rounded-lg bg-emerald-50 text-emerald-800 border border-emerald-200">
+                                          {rec.timestamp || rec.p1StartTimestamp}
+                                        </span>
+                                      ) : (
+                                        <span className="text-slate-400">-</span>
+                                      )}
+                                    </td>
+                                    <td className="py-3 px-3.5 text-center">
+                                      <span className={`px-2.5 py-1 rounded-full text-[10px] font-extrabold uppercase ${
+                                        overall === 'present' ? 'bg-emerald-100 text-emerald-800' : 'bg-rose-100 text-rose-800'
+                                      }`}>
+                                        {overall === 'present' ? 'Presente' : 'Falta'}
+                                      </span>
+                                    </td>
+                                    <td className="py-3 px-3.5 text-center text-slate-500 font-medium">
+                                      {rec?.checkinMethod === 'qrcode' ? (
+                                        <span className="inline-flex items-center gap-1 text-sky-700 font-bold">
+                                          <QrCode className="w-3.5 h-3.5" /> QR Code
+                                        </span>
+                                      ) : (
+                                        'Manual'
+                                      )}
+                                    </td>
+                                  </>
+                                ) : (
+                                  <>
+                                    <td className="py-3 px-3.5 text-center">
+                                      <div className="flex flex-col items-center">
+                                        <span className={`px-2.5 py-1 rounded-xl text-[10.5px] font-bold ${
+                                          isP1 ? 'bg-emerald-50 text-emerald-700 border border-emerald-200' : 'bg-rose-50 text-rose-700 border border-rose-200'
+                                        }`}>
+                                          {isP1 ? 'Presente' : 'Falta'}
+                                        </span>
+                                        {(rec?.period1Timestamp || rec?.p1StartTimestamp || rec?.p1EndTimestamp) && isP1 && (
+                                          <span className="text-[10px] font-mono text-slate-500 mt-0.5">
+                                            {rec.period1Timestamp || rec.p1StartTimestamp || rec.p1EndTimestamp}
+                                          </span>
+                                        )}
+                                      </div>
+                                    </td>
+
+                                    <td className="py-3 px-3.5 text-center">
+                                      <div className="flex flex-col items-center">
+                                        <span className={`px-2.5 py-1 rounded-xl text-[10.5px] font-bold ${
+                                          isP2 ? 'bg-sky-50 text-sky-700 border border-sky-200' : 'bg-rose-50 text-rose-700 border border-rose-200'
+                                        }`}>
+                                          {isP2 ? 'Presente' : 'Falta'}
+                                        </span>
+                                        {(rec?.period2Timestamp || rec?.p2StartTimestamp || rec?.p2EndTimestamp) && isP2 && (
+                                          <span className="text-[10px] font-mono text-slate-500 mt-0.5">
+                                            {rec.period2Timestamp || rec.p2StartTimestamp || rec.p2EndTimestamp}
+                                          </span>
+                                        )}
+                                      </div>
+                                    </td>
+
+                                    <td className="py-3 px-3.5 text-center">
+                                      <span className={`px-2.5 py-1 rounded-full text-[10px] font-extrabold uppercase ${
+                                        overall === 'present' ? 'bg-emerald-100 text-emerald-800' : overall === 'late' ? 'bg-amber-100 text-amber-800' : overall === 'excused' ? 'bg-sky-100 text-sky-800' : 'bg-rose-100 text-rose-800'
+                                      }`}>
+                                        {overall === 'present' ? 'Presente' : overall === 'late' ? 'Atraso' : overall === 'excused' ? 'Justificada' : 'Falta'}
+                                      </span>
+                                    </td>
+
+                                    <td className="py-3 px-3.5 text-center text-slate-500 font-medium">
+                                      {rec?.checkinMethod === 'qrcode' ? (
+                                        <span className="inline-flex items-center gap-1 text-sky-700 font-bold">
+                                          <QrCode className="w-3.5 h-3.5" /> QR Code
+                                        </span>
+                                      ) : (
+                                        'Manual'
+                                      )}
+                                    </td>
+                                  </>
+                                )}
+                              </tr>
+                            );
+                          })
+                        )}
+                      </tbody>
+                    </table>
+                  </div>
+                </div>
+              );
+            })() : (
               <div className="p-8 text-center text-slate-400 text-xs">
                 Nenhuma chamada registrada nesta turma para detalhamento.
               </div>
@@ -1148,16 +1462,16 @@ export const ReportsView: React.FC = () => {
           </div>
         </div>
       ) : (
-        /* 3. Session Deletion & Management Tab */
+        /* 3. Session History & Management Tab */
         <div className="bg-white rounded-3xl p-4 sm:p-6 border border-slate-200/90 shadow-xs space-y-4">
           <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3 pb-3 border-b border-slate-100">
             <div>
               <h3 className="text-base font-bold text-slate-900 flex items-center gap-2">
-                <Trash2 className="w-5 h-5 text-rose-600" />
-                Histórico & Exclusão de Chamadas
+                <FolderOpen className="w-5 h-5 text-sky-600" />
+                Histórico & Gerenciamento de Chamadas
               </h3>
               <p className="text-xs text-slate-500">
-                Gerencie, selecione em lote ou exclua chamadas anteriores desta turma com sincronização instantânea.
+                Consulte qualquer chamada anterior com lista completa de presenças, exporte para Excel ou exclua registros.
               </p>
             </div>
 
@@ -1177,16 +1491,16 @@ export const ReportsView: React.FC = () => {
           {/* Controls Bar: Search & Batch Action Buttons */}
           <div className="flex flex-col sm:flex-row items-stretch sm:items-center justify-between gap-2.5">
             {/* Search filter input */}
-            <div className="relative flex-1 min-w-[200px]">
-              <Search className="w-4 h-4 text-slate-400 absolute left-3 top-1/2 -translate-y-1/2" />
-              <input
-                type="text"
-                placeholder="Buscar chamada por tema ou data..."
-                value={sessionSearchQuery}
-                onChange={(e) => setSessionSearchQuery(e.target.value)}
-                className="w-full pl-9 pr-3 py-2 rounded-xl bg-slate-50 border border-slate-200 text-xs font-medium text-slate-800 focus:outline-none focus:ring-2 focus:ring-teal-500"
-              />
-            </div>
+              <div className="relative flex-1 min-w-[200px]">
+                <Search className="w-4 h-4 text-slate-400 absolute left-3 top-1/2 -translate-y-1/2" />
+                <input
+                  type="text"
+                  placeholder="Buscar chamada por tema, data, horário (ex: 07:30) ou docente..."
+                  value={sessionSearchQuery}
+                  onChange={(e) => setSessionSearchQuery(e.target.value)}
+                  className="w-full pl-9 pr-3 py-2 rounded-xl bg-slate-50 border border-slate-200 text-xs font-medium text-slate-800 focus:outline-none focus:ring-2 focus:ring-sky-500"
+                />
+              </div>
 
             {/* Action buttons */}
             <div className="flex items-center gap-2 flex-wrap">
@@ -1241,14 +1555,14 @@ export const ReportsView: React.FC = () => {
                   return (
                     (session.topic || '').toLowerCase().includes(query) ||
                     (session.date || '').toLowerCase().includes(query) ||
-                    (session.professorName || '').toLowerCase().includes(query)
+                    (session.professorName || '').toLowerCase().includes(query) ||
+                    (session.startTime || '').toLowerCase().includes(query) ||
+                    (session.endTime || '').toLowerCase().includes(query) ||
+                    (session.labLocation || '').toLowerCase().includes(query)
                   );
                 })
                 .map((session) => {
-                  const totalInSession = Object.keys(session.attendance || {}).length;
-                  const presentsInSession = Object.values(session.attendance || {}).filter(
-                    (r: any) => r.status === 'present' || r.status === 'late'
-                  ).length;
+                  const stats = getSessionStats(session);
                   const isSelected = selectedSessionIds.includes(session.id);
 
                   return (
@@ -1258,11 +1572,11 @@ export const ReportsView: React.FC = () => {
                         isSelected ? 'bg-rose-50/60 border-l-4 border-l-rose-500' : 'hover:bg-slate-50'
                       }`}
                     >
-                      <div className="flex items-start gap-3">
+                      <div className="flex items-start gap-3 flex-1">
                         {/* Checkbox for batch deletion */}
                         <button
                           onClick={() => toggleSelectSession(session.id)}
-                          className={`mt-0.5 w-5 h-5 rounded-lg border flex items-center justify-center transition-all cursor-pointer shrink-0 ${
+                          className={`mt-1 w-5 h-5 rounded-lg border flex items-center justify-center transition-all cursor-pointer shrink-0 ${
                             isSelected
                               ? 'bg-rose-600 border-rose-600 text-white shadow-xs'
                               : 'bg-white border-slate-300 hover:border-slate-400 text-transparent'
@@ -1271,33 +1585,91 @@ export const ReportsView: React.FC = () => {
                           <CheckSquare className="w-3.5 h-3.5" />
                         </button>
 
-                        <div className="space-y-1">
+                        <div 
+                          onClick={() => {
+                            setViewingSessionModal(session);
+                            playBeep('confirm');
+                          }}
+                          className="space-y-1.5 cursor-pointer flex-1 group"
+                        >
                           <div className="flex items-center gap-2 flex-wrap">
-                            <span className="font-bold text-sm text-slate-900">{session.topic}</span>
+                            <span className="font-bold text-sm text-slate-900 group-hover:text-sky-700 transition-colors flex items-center gap-1.5">
+                              {session.topic}
+                              <Eye className="w-3.5 h-3.5 opacity-0 group-hover:opacity-100 text-sky-600 transition-opacity" />
+                            </span>
                             <span className="px-2.5 py-0.5 rounded-lg bg-sky-50 text-sky-800 text-[11px] font-bold border border-sky-200">
                               {formatDateDisplay(session.date)}
                             </span>
+                            <span className="px-2.5 py-0.5 rounded-lg bg-slate-100 text-slate-700 text-[11px] font-bold border border-slate-200 flex items-center gap-1" title="Horário da chamada">
+                              <Clock className="w-3 h-3 text-sky-600" />
+                              <span>{getSessionTimeDisplay(session)}</span>
+                            </span>
+                            {session.labLocation && (
+                              <span className={`px-2 py-0.5 rounded-md text-[10px] font-bold border ${
+                                session.labLocation === 'anatomia'
+                                  ? 'bg-amber-50 text-amber-900 border-amber-200'
+                                  : 'bg-indigo-50 text-indigo-900 border-indigo-200'
+                              }`}>
+                                {session.labLocation === 'anatomia' ? '🫀 Anatomia' : '🔬 Histologia'}
+                              </span>
+                            )}
                             {session.activityCategory && (
                               <span className="px-2 py-0.5 rounded-md bg-teal-50 text-teal-800 text-[10px] font-bold border border-teal-200 uppercase">
                                 {session.activityCategory}
                               </span>
                             )}
-                            {session.isLocked && (
-                              <span className="px-2 py-0.5 rounded-md bg-rose-50 text-rose-700 text-[10px] font-bold border border-rose-200">
-                                Encerrada
+                            {session.isLocked ? (
+                              <span className="px-2 py-0.5 rounded-md bg-rose-50 text-rose-700 text-[10px] font-bold border border-rose-200 flex items-center gap-1">
+                                <Lock className="w-2.5 h-2.5" /> Encerrada
+                              </span>
+                            ) : (
+                              <span className="px-2 py-0.5 rounded-md bg-emerald-50 text-emerald-800 text-[10px] font-bold border border-emerald-200">
+                                Aberta
                               </span>
                             )}
                           </div>
-                          <p className="text-xs text-slate-500">
-                            Docente: {session.professorName || 'Não especificado'} • Presenças Registradas: <strong className="text-emerald-700">{presentsInSession}</strong> de {totalInSession} alunos
-                          </p>
+                          <div className="flex items-center gap-2 text-xs text-slate-500 flex-wrap">
+                            <span className="flex items-center gap-1 text-slate-700">
+                              <Clock className="w-3.5 h-3.5 text-sky-600" />
+                              <span>Horário da Chamada: <strong className="font-mono font-bold text-slate-800">{getSessionTimeDisplay(session)}</strong></span>
+                            </span>
+                            <span>•</span>
+                            <span>Docente: <strong className="text-slate-700">{session.professorName || 'Não especificado'}</strong></span>
+                            <span>•</span>
+                            <span>Presenças: <strong className="text-emerald-700 font-bold">{stats.overallPresentCount} de {stats.total} ({stats.rate}%)</strong></span>
+                            <span>•</span>
+                            <span>Faltas: <strong className="text-rose-600 font-bold">{stats.absentCount}</strong></span>
+                          </div>
                         </div>
                       </div>
 
                       <div className="flex items-center gap-2 self-end sm:self-auto shrink-0">
                         <button
+                          id={`btn-open-call-${session.id}`}
+                          onClick={() => {
+                            setViewingSessionModal(session);
+                            playBeep('confirm');
+                          }}
+                          className="px-3.5 py-2 rounded-xl bg-sky-600 hover:bg-sky-700 text-white text-xs font-bold shadow-xs flex items-center gap-1.5 transition-all active:scale-95 cursor-pointer"
+                          title="Abrir o histórico completo desta chamada no próprio app"
+                        >
+                          <Eye className="w-3.5 h-3.5" />
+                          <span>Abrir Chamada</span>
+                        </button>
+
+                        <button
+                          onClick={() => handleExportSingleSession(session)}
+                          className="p-2 sm:px-3 sm:py-2 rounded-xl bg-emerald-50 hover:bg-emerald-100 text-emerald-800 border border-emerald-200 text-xs font-bold flex items-center gap-1.5 transition-colors cursor-pointer"
+                          title="Exportar planilha Excel desta chamada"
+                        >
+                          <FileSpreadsheet className="w-3.5 h-3.5 text-emerald-600" />
+                          <span className="hidden sm:inline">Excel</span>
+                        </button>
+
+                        <button
                           onClick={() => setDeletingSessionId(session.id)}
-                          className="px-3 py-1.5 rounded-xl bg-rose-50 hover:bg-rose-100 text-rose-700 text-xs font-bold border border-rose-200 flex items-center gap-1.5 transition-colors cursor-pointer"
+                          className="px-3 py-2 rounded-xl bg-rose-50 hover:bg-rose-100 text-rose-700 text-xs font-bold border border-rose-200 flex items-center gap-1.5 transition-colors cursor-pointer"
+                          title="Excluir registro desta chamada"
                         >
                           <Trash2 className="w-3.5 h-3.5 text-rose-600" />
                           <span>Excluir</span>
@@ -1351,16 +1723,24 @@ export const ReportsView: React.FC = () => {
                   return (
                     <div key={sess.id} className="p-3 rounded-2xl border border-slate-100 bg-slate-50/70 flex items-center justify-between gap-3">
                       <div>
-                        <div className="flex items-center gap-2">
+                        <div className="flex items-center gap-2 flex-wrap">
                           <Calendar className="w-3.5 h-3.5 text-sky-600" />
                           <span className="text-xs font-black text-slate-800">{formatDateDisplay(sess.date)}</span>
+                          <span className="px-2 py-0.5 rounded-md bg-slate-100 text-slate-700 text-[10px] font-bold font-mono border border-slate-200 flex items-center gap-1">
+                            <Clock className="w-2.5 h-2.5 text-slate-500" />
+                            {getSessionTimeDisplay(sess)}
+                          </span>
                           <span className="text-[10px] font-bold text-slate-500 truncate max-w-[160px]">{sess.topic}</span>
                         </div>
-                        {rec?.timestamp && (
-                          <span className="text-[10px] font-mono text-slate-500 block mt-0.5">
-                            Horário: {rec.timestamp} • Método: {rec.checkinMethod === 'qrcode' ? 'QR Code' : 'Manual'}
-                          </span>
-                        )}
+                        <div className="text-[10px] text-slate-500 mt-1 flex items-center gap-2 flex-wrap">
+                          <span>Horário da Chamada: <strong className="text-slate-700 font-mono">{getSessionTimeDisplay(sess)}</strong></span>
+                          {rec?.timestamp && (
+                            <>
+                              <span>•</span>
+                              <span>Check-in Aluno: <strong className="text-emerald-700 font-mono">{rec.timestamp}</strong> ({rec.checkinMethod === 'qrcode' ? 'QR Code' : 'Manual'})</span>
+                            </>
+                          )}
+                        </div>
                       </div>
 
                       <div>
@@ -1507,6 +1887,373 @@ export const ReportsView: React.FC = () => {
           </div>
         </div>
       )}
+
+      {/* MODAL: VISUALIZADOR IN-APP DO HISTÓRICO DA CHAMADA */}
+      {viewingSessionModal && (() => {
+        const stats = getSessionStats(viewingSessionModal);
+        const isActivity = viewingSessionModal.activityCategory === 'atividade' || viewingSessionModal.activityType?.startsWith('atividade');
+
+        return (
+          <div className="fixed inset-0 z-50 bg-slate-950/75 backdrop-blur-xs flex items-center justify-center p-2 sm:p-4 overflow-y-auto">
+            <div className="bg-white rounded-3xl border border-slate-200 shadow-2xl max-w-4xl w-full max-h-[92vh] flex flex-col animate-in zoom-in-95 overflow-hidden">
+              
+              {/* Modal Header */}
+              <div className="p-4 sm:p-5 border-b border-slate-100 bg-slate-50/50 flex flex-col sm:flex-row sm:items-center justify-between gap-3">
+                <div className="space-y-1">
+                  <div className="flex items-center gap-2 flex-wrap">
+                    <span className="px-2.5 py-0.5 rounded-md bg-sky-100 text-sky-800 text-[10px] font-extrabold uppercase tracking-wide border border-sky-200 flex items-center gap-1">
+                      <FolderOpen className="w-3 h-3" />
+                      Espelho da Chamada
+                    </span>
+                    <span className="px-2.5 py-0.5 rounded-md bg-slate-200 text-slate-800 text-[10px] font-bold border border-slate-300">
+                      {formatDateDisplay(viewingSessionModal.date)}
+                    </span>
+                    <span className="px-2.5 py-0.5 rounded-md bg-sky-50 text-sky-800 text-[10px] font-bold border border-sky-200 flex items-center gap-1">
+                      <Clock className="w-3 h-3 text-sky-600" />
+                      Horário: {getSessionTimeDisplay(viewingSessionModal)}
+                    </span>
+                    {viewingSessionModal.labLocation && (
+                      <span className={`px-2.5 py-0.5 rounded-md text-[10px] font-bold border ${
+                        viewingSessionModal.labLocation === 'anatomia'
+                          ? 'bg-amber-100 text-amber-900 border-amber-300'
+                          : 'bg-indigo-100 text-indigo-900 border-indigo-300'
+                      }`}>
+                        {viewingSessionModal.labLocation === 'anatomia' ? '🫀 Lab. de Anatomia' : '🔬 Lab. de Histologia'}
+                      </span>
+                    )}
+                    {viewingSessionModal.isLocked ? (
+                      <span className="px-2 py-0.5 rounded-md bg-rose-100 text-rose-800 text-[10px] font-bold border border-rose-200 flex items-center gap-1">
+                        <Lock className="w-2.5 h-2.5" />
+                        Encerrada
+                      </span>
+                    ) : (
+                      <span className="px-2 py-0.5 rounded-md bg-emerald-100 text-emerald-800 text-[10px] font-bold border border-emerald-200">
+                        Aberta
+                      </span>
+                    )}
+                  </div>
+                  <h3 className="text-base sm:text-lg font-black text-slate-900 leading-tight">
+                    {viewingSessionModal.topic}
+                  </h3>
+                  <p className="text-xs text-slate-500 flex items-center gap-1.5 flex-wrap">
+                    <span>Turma: <strong className="text-slate-800">{selectedClass?.name}</strong></span>
+                    <span>•</span>
+                    <span className="flex items-center gap-1">
+                      <Clock className="w-3 h-3 text-sky-600" />
+                      <span>Horário da Chamada: <strong className="text-slate-800 font-mono">{getSessionTimeDisplay(viewingSessionModal)}</strong></span>
+                    </span>
+                    <span>•</span>
+                    <span>Docente: <strong className="text-slate-800">{viewingSessionModal.professorName || 'Não especificado'}</strong></span>
+                  </p>
+                </div>
+
+                {/* Header Actions */}
+                <div className="flex items-center gap-2 self-end sm:self-auto shrink-0 flex-wrap">
+                  <button
+                    onClick={() => handleExportSingleSession(viewingSessionModal)}
+                    className="px-3 py-1.5 rounded-xl bg-emerald-600 hover:bg-emerald-700 text-white text-xs font-bold shadow-xs flex items-center gap-1.5 transition-all active:scale-95 cursor-pointer"
+                    title="Exportar esta chamada para Excel (.xlsx)"
+                  >
+                    <FileSpreadsheet className="w-3.5 h-3.5" />
+                    <span>Excel (.xlsx)</span>
+                  </button>
+
+                  <button
+                    onClick={() => window.print()}
+                    className="px-3 py-1.5 rounded-xl bg-slate-100 hover:bg-slate-200 text-slate-700 text-xs font-bold border border-slate-200 flex items-center gap-1.5 transition-colors cursor-pointer"
+                    title="Imprimir espelho desta chamada"
+                  >
+                    <Printer className="w-3.5 h-3.5" />
+                    <span>Imprimir</span>
+                  </button>
+
+                  <button
+                    onClick={() => {
+                      setViewingSessionModal(null);
+                      setModalStudentSearch('');
+                      setModalStatusFilter('all');
+                    }}
+                    className="p-1.5 rounded-xl bg-slate-100 hover:bg-slate-200 text-slate-500 hover:text-slate-800 transition-colors cursor-pointer"
+                    title="Fechar modal"
+                  >
+                    <XCircle className="w-5 h-5" />
+                  </button>
+                </div>
+              </div>
+
+              {/* KPI Summary Cards */}
+              <div className="grid grid-cols-2 sm:grid-cols-5 gap-2.5 p-4 sm:p-5 border-b border-slate-100 bg-slate-50/30">
+                <div className="p-3 rounded-2xl bg-sky-50/70 border border-sky-200/80 shadow-2xs">
+                  <span className="text-[10px] font-bold text-sky-800 uppercase tracking-wider block">Horário da Chamada</span>
+                  <div className="flex items-center gap-1 mt-0.5">
+                    <Clock className="w-4 h-4 text-sky-600 shrink-0" />
+                    <span className="text-xs sm:text-sm font-black text-slate-900 font-mono truncate">{getSessionTimeDisplay(viewingSessionModal)}</span>
+                  </div>
+                </div>
+
+                <div className="p-3 rounded-2xl bg-white border border-slate-200/90 shadow-2xs">
+                  <span className="text-[10px] font-bold text-slate-500 uppercase tracking-wider block">Matriculados</span>
+                  <div className="flex items-baseline gap-1.5 mt-0.5">
+                    <span className="text-xl font-black text-slate-900">{stats.total}</span>
+                    <span className="text-[11px] text-slate-400 font-semibold">alunos</span>
+                  </div>
+                </div>
+
+                <div className="p-3 rounded-2xl bg-white border border-slate-200/90 shadow-2xs">
+                  <span className="text-[10px] font-bold text-slate-500 uppercase tracking-wider block">1ª Aula</span>
+                  <div className="flex items-baseline gap-1.5 mt-0.5">
+                    <span className="text-xl font-black text-emerald-700">{stats.p1Count}</span>
+                    <span className="text-[11px] text-emerald-600 font-bold">
+                      ({stats.total > 0 ? Math.round((stats.p1Count / stats.total) * 100) : 0}%)
+                    </span>
+                  </div>
+                </div>
+
+                <div className="p-3 rounded-2xl bg-white border border-slate-200/90 shadow-2xs">
+                  <span className="text-[10px] font-bold text-slate-500 uppercase tracking-wider block">2ª Aula</span>
+                  <div className="flex items-baseline gap-1.5 mt-0.5">
+                    <span className="text-xl font-black text-sky-700">{stats.p2Count}</span>
+                    <span className="text-[11px] text-sky-600 font-bold">
+                      ({stats.total > 0 ? Math.round((stats.p2Count / stats.total) * 100) : 0}%)
+                    </span>
+                  </div>
+                </div>
+
+                <div className="p-3 rounded-2xl bg-white border border-slate-200/90 shadow-2xs">
+                  <span className="text-[10px] font-bold text-slate-500 uppercase tracking-wider block">Frequência Geral</span>
+                  <div className="flex items-baseline gap-1.5 mt-0.5">
+                    <span className="text-xl font-black text-slate-900">{stats.rate}%</span>
+                    <span className="text-[11px] text-rose-600 font-bold">({stats.absentCount} faltas)</span>
+                  </div>
+                </div>
+              </div>
+
+              {/* Toolbar: Search and Filter inside modal */}
+              <div className="p-3 sm:px-5 sm:py-3 border-b border-slate-100 flex flex-col sm:flex-row items-stretch sm:items-center justify-between gap-2.5">
+                <div className="relative flex-1 min-w-[200px]">
+                  <Search className="w-4 h-4 text-slate-400 absolute left-3 top-1/2 -translate-y-1/2" />
+                  <input
+                    type="text"
+                    placeholder="Buscar aluno por nome ou RA nesta chamada..."
+                    value={modalStudentSearch}
+                    onChange={(e) => setModalStudentSearch(e.target.value)}
+                    className="w-full pl-9 pr-3 py-1.5 rounded-xl bg-slate-50 border border-slate-200 text-xs font-medium text-slate-800 focus:outline-none focus:ring-2 focus:ring-sky-500"
+                  />
+                </div>
+
+                <div className="flex items-center gap-1.5 self-end sm:self-auto">
+                  <button
+                    onClick={() => setModalStatusFilter('all')}
+                    className={`px-3 py-1.5 rounded-xl text-xs font-bold transition-colors cursor-pointer ${
+                      modalStatusFilter === 'all'
+                        ? 'bg-slate-900 text-white shadow-xs'
+                        : 'bg-slate-100 text-slate-600 hover:bg-slate-200'
+                    }`}
+                  >
+                    Todos ({stats.total})
+                  </button>
+                  <button
+                    onClick={() => setModalStatusFilter('present')}
+                    className={`px-3 py-1.5 rounded-xl text-xs font-bold transition-colors cursor-pointer ${
+                      modalStatusFilter === 'present'
+                        ? 'bg-emerald-600 text-white shadow-xs'
+                        : 'bg-emerald-50 text-emerald-800 hover:bg-emerald-100'
+                    }`}
+                  >
+                    Presentes ({stats.overallPresentCount})
+                  </button>
+                  <button
+                    onClick={() => setModalStatusFilter('absent')}
+                    className={`px-3 py-1.5 rounded-xl text-xs font-bold transition-colors cursor-pointer ${
+                      modalStatusFilter === 'absent'
+                        ? 'bg-rose-600 text-white shadow-xs'
+                        : 'bg-rose-50 text-rose-800 hover:bg-rose-100'
+                    }`}
+                  >
+                    Faltas ({stats.absentCount})
+                  </button>
+                </div>
+              </div>
+
+              {/* Table of Students in the session */}
+              <div className="overflow-y-auto overflow-x-auto flex-1 p-0">
+                <table className="w-full text-left text-xs border-collapse min-w-[650px]">
+                  <thead className="sticky top-0 bg-slate-100 z-10 text-slate-700 font-bold uppercase text-[10px] tracking-wider border-b border-slate-200">
+                    <tr>
+                      <th className="py-2.5 px-3 w-12 text-center">Nº</th>
+                      <th className="py-2.5 px-3.5">Aluno</th>
+                      <th className="py-2.5 px-3">RA</th>
+                      {isActivity ? (
+                        <>
+                          <th className="py-2.5 px-3 text-center">Horário</th>
+                          <th className="py-2.5 px-3 text-center">Status</th>
+                          <th className="py-2.5 px-3 text-center">Método</th>
+                        </>
+                      ) : (
+                        <>
+                          <th className="py-2.5 px-3 text-center">1ª Aula</th>
+                          <th className="py-2.5 px-3 text-center">2ª Aula</th>
+                          <th className="py-2.5 px-3 text-center">Status Geral</th>
+                          <th className="py-2.5 px-3 text-center">Método</th>
+                        </>
+                      )}
+                    </tr>
+                  </thead>
+                  <tbody className="divide-y divide-slate-100 bg-white">
+                    {modalDisplayedStudents.length === 0 ? (
+                      <tr>
+                        <td colSpan={6} className="py-8 text-center text-slate-400 text-xs">
+                          Nenhum aluno encontrado para os filtros selecionados.
+                        </td>
+                      </tr>
+                    ) : (
+                      modalDisplayedStudents.map((st, idx) => {
+                        const rec = viewingSessionModal.attendance?.[st.id];
+                        const p1Start = rec?.p1StartStatus || (rec?.period1Status === 'present' ? 'present' : 'absent');
+                        const p1End = rec?.p1EndStatus || (rec?.period1Status === 'present' ? 'present' : 'absent');
+                        const p2Start = rec?.p2StartStatus || (rec?.period2Status === 'present' ? 'present' : 'absent');
+                        const p2End = rec?.p2EndStatus || (rec?.period2Status === 'present' ? 'present' : 'absent');
+                        const isP1 = rec?.period1Status === 'present' || p1Start === 'present' || p1End === 'present';
+                        const isP2 = rec?.period2Status === 'present' || p2Start === 'present' || p2End === 'present';
+                        const isLate = rec?.status === 'late' || rec?.period1Status === 'late' || rec?.period2Status === 'late';
+                        const isExcused = rec?.status === 'excused' || rec?.period1Status === 'excused' || rec?.period2Status === 'excused';
+                        const overall = rec?.status === 'present' || isP1 || isP2 ? 'present' : isLate ? 'late' : isExcused ? 'excused' : 'absent';
+
+                        return (
+                          <tr key={st.id} className="hover:bg-slate-50 transition-colors">
+                            <td className="py-2.5 px-3 text-center font-mono text-slate-400 font-bold text-[11px]">
+                              {String(idx + 1).padStart(2, '0')}
+                            </td>
+                            <td className="py-2.5 px-3.5 font-bold text-slate-900">
+                              {st.name}
+                            </td>
+                            <td className="py-2.5 px-3 font-mono text-slate-600">
+                              {st.registrationNumber}
+                            </td>
+
+                            {isActivity ? (
+                              <>
+                                <td className="py-2.5 px-3 text-center font-mono">
+                                  {rec?.timestamp || rec?.p1StartTimestamp ? (
+                                    <span className="px-2 py-0.5 rounded-md bg-emerald-50 text-emerald-800 border border-emerald-200 font-bold text-[10.5px]">
+                                      {rec.timestamp || rec.p1StartTimestamp}
+                                    </span>
+                                  ) : (
+                                    <span className="text-slate-400">-</span>
+                                  )}
+                                </td>
+                                <td className="py-2.5 px-3 text-center">
+                                  <span className={`px-2.5 py-0.5 rounded-full text-[10px] font-extrabold uppercase ${
+                                    overall === 'present' ? 'bg-emerald-100 text-emerald-800' : 'bg-rose-100 text-rose-800'
+                                  }`}>
+                                    {overall === 'present' ? 'Presente' : 'Falta'}
+                                  </span>
+                                </td>
+                                <td className="py-2.5 px-3 text-center text-slate-500 font-medium text-[11px]">
+                                  {rec?.checkinMethod === 'qrcode' ? (
+                                    <span className="inline-flex items-center gap-1 text-sky-700 font-bold">
+                                      <QrCode className="w-3 h-3" /> QR Code
+                                    </span>
+                                  ) : (
+                                    'Manual'
+                                  )}
+                                </td>
+                              </>
+                            ) : (
+                              <>
+                                <td className="py-2.5 px-3 text-center">
+                                  <div className="flex flex-col items-center">
+                                    <span className={`px-2.5 py-0.5 rounded-lg text-[10.5px] font-bold ${
+                                      isP1 ? 'bg-emerald-50 text-emerald-700 border border-emerald-200' : 'bg-rose-50 text-rose-700 border border-rose-200'
+                                    }`}>
+                                      {isP1 ? 'Presente' : 'Falta'}
+                                    </span>
+                                    {(rec?.period1Timestamp || rec?.p1StartTimestamp || rec?.p1EndTimestamp) && isP1 && (
+                                      <span className="text-[9.5px] font-mono text-slate-500 mt-0.5">
+                                        {rec.period1Timestamp || rec.p1StartTimestamp || rec.p1EndTimestamp}
+                                      </span>
+                                    )}
+                                  </div>
+                                </td>
+
+                                <td className="py-2.5 px-3 text-center">
+                                  <div className="flex flex-col items-center">
+                                    <span className={`px-2.5 py-0.5 rounded-lg text-[10.5px] font-bold ${
+                                      isP2 ? 'bg-sky-50 text-sky-700 border border-sky-200' : 'bg-rose-50 text-rose-700 border border-rose-200'
+                                    }`}>
+                                      {isP2 ? 'Presente' : 'Falta'}
+                                    </span>
+                                    {(rec?.period2Timestamp || rec?.p2StartTimestamp || rec?.p2EndTimestamp) && isP2 && (
+                                      <span className="text-[9.5px] font-mono text-slate-500 mt-0.5">
+                                        {rec.period2Timestamp || rec.p2StartTimestamp || rec.p2EndTimestamp}
+                                      </span>
+                                    )}
+                                  </div>
+                                </td>
+
+                                <td className="py-2.5 px-3 text-center">
+                                  <span className={`px-2.5 py-0.5 rounded-full text-[10px] font-extrabold uppercase ${
+                                    overall === 'present' ? 'bg-emerald-100 text-emerald-800' : overall === 'late' ? 'bg-amber-100 text-amber-800' : overall === 'excused' ? 'bg-sky-100 text-sky-800' : 'bg-rose-100 text-rose-800'
+                                  }`}>
+                                    {overall === 'present' ? 'Presente' : overall === 'late' ? 'Atraso' : overall === 'excused' ? 'Justificada' : 'Falta'}
+                                  </span>
+                                </td>
+
+                                <td className="py-2.5 px-3 text-center text-slate-500 font-medium text-[11px]">
+                                  {rec?.checkinMethod === 'qrcode' ? (
+                                    <span className="inline-flex items-center gap-1 text-sky-700 font-bold">
+                                      <QrCode className="w-3 h-3" /> QR Code
+                                    </span>
+                                  ) : (
+                                    'Manual'
+                                  )}
+                                </td>
+                              </>
+                            )}
+                          </tr>
+                        );
+                      })
+                    )}
+                  </tbody>
+                </table>
+              </div>
+
+              {/* Modal Footer */}
+              <div className="p-4 sm:px-5 sm:py-3 border-t border-slate-100 bg-slate-50 flex flex-col sm:flex-row items-center justify-between gap-3">
+                <span className="text-xs text-slate-500">
+                  Exibindo <strong>{modalDisplayedStudents.length}</strong> de <strong>{classStudents.length}</strong> alunos
+                </span>
+
+                <div className="flex items-center gap-2">
+                  <button
+                    onClick={() => {
+                      setSelectedSessionDetailId(viewingSessionModal.id);
+                      setActiveReportTab('detalhado_sessoes');
+                      setViewingSessionModal(null);
+                    }}
+                    className="px-3.5 py-2 rounded-xl bg-sky-50 hover:bg-sky-100 text-sky-700 text-xs font-bold border border-sky-200 flex items-center gap-1.5 transition-colors cursor-pointer"
+                  >
+                    <ExternalLink className="w-3.5 h-3.5" />
+                    <span>Ver no Espelho em Tela Cheia</span>
+                  </button>
+
+                  <button
+                    onClick={() => {
+                      setViewingSessionModal(null);
+                      setModalStudentSearch('');
+                      setModalStatusFilter('all');
+                    }}
+                    className="px-4 py-2 rounded-xl bg-slate-900 hover:bg-slate-800 text-white text-xs font-bold transition-colors cursor-pointer"
+                  >
+                    Fechar
+                  </button>
+                </div>
+              </div>
+
+            </div>
+          </div>
+        );
+      })()}
 
     </div>
   );

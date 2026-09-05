@@ -60,6 +60,7 @@ export const SecureStudentPortal: React.FC<SecureStudentPortalProps> = ({
     professors,
     setActiveProfessorId,
     activeSession, 
+    sessions,
     studentSelfCheckin, 
     dynamicToken,
     dynamicSecondsLeft,
@@ -188,29 +189,52 @@ export const SecureStudentPortal: React.FC<SecureStudentPortalProps> = ({
     }
   };
 
-  // Active session and period (prioritize live session period so email links or older tabs adapt dynamically)
-  const isSessionLive = Boolean(activeSession && activeSession.isLive && !activeSession.isLocked);
+  // Active session and period (intelligently identify target session from QR code or current class)
+  const urlSessionId = getPortalParam('session') || getPortalParam('sessionId');
+  const targetSession = useMemo(() => {
+    if (urlSessionId) {
+      const found = sessions.find(s => s.id === urlSessionId);
+      if (found) return found;
+    }
+    if (currentClass?.id) {
+      const classLive = sessions.find(s => s.classGroupId === currentClass.id && s.isLive && !s.isLocked);
+      if (classLive) return classLive;
+      const classLocked = sessions.find(s => s.classGroupId === currentClass.id && s.isLocked);
+      if (classLocked) return classLocked;
+    }
+    return activeSession;
+  }, [urlSessionId, sessions, currentClass, activeSession]);
+
+  const isSessionLocked = Boolean(targetSession && (!targetSession.isLive || targetSession.isLocked));
+  const isSessionLive = Boolean(targetSession && targetSession.isLive && !targetSession.isLocked);
+
+  // Check if a newer live session is already active for this class
+  const newerActiveSession = useMemo(() => {
+    if (!targetSession || !isSessionLocked) return null;
+    return sessions.find(s => s.classGroupId === targetSession.classGroupId && s.isLive && !s.isLocked);
+  }, [sessions, targetSession, isSessionLocked]);
+
   const urlPeriod = initialPeriod || getPortalParam('period') || getPortalParam('etapa');
-  const activePeriod = (isSessionLive && activeSession?.activePeriod)
-    ? activeSession.activePeriod
-    : (urlPeriod || activeSession?.activePeriod || 'p1_start');
+  const activePeriod = (isSessionLive && targetSession?.activePeriod)
+    ? targetSession.activePeriod
+    : (urlPeriod || targetSession?.activePeriod || '1');
 
   const stageLabels: Record<string, string> = {
-    'p1_start': '1ª Aula (Início)',
-    'p1_end': '1ª Aula (Final)',
-    'p2_start': '2ª Aula (Início)',
-    'p2_end': '2ª Aula (Final)',
     '1': '1ª Aula',
     '2': '2ª Aula',
     'both': 'Chamada Integral (1ª e 2ª)',
+    'p1_start': '1ª Aula',
+    'p1_end': '1ª Aula',
+    'p2_start': '2ª Aula',
+    'p2_end': '2ª Aula',
     'activity_single': 'Atividade Prática'
   };
   const periodLabel = stageLabels[activePeriod] || '1ª Aula';
 
   // Auto-fill token from props or URL
   const tokenToUse = useMemo(() => {
-    return initialToken || getPortalParam('checkin') || getPortalParam('token') || dynamicToken || activeSession?.checkinCode || 'AUTO';
-  }, [initialToken, dynamicToken, activeSession]);
+    return initialToken || getPortalParam('checkin') || getPortalParam('token') || dynamicToken || targetSession?.checkinCode || 'AUTO';
+  }, [initialToken, dynamicToken, targetSession]);
 
   // Keep stable refs for mount-only auto-checkin
   const studentSelfCheckinRef = useRef(studentSelfCheckin);
@@ -228,7 +252,7 @@ export const SecureStudentPortal: React.FC<SecureStudentPortalProps> = ({
   const playBeepRef = useRef(playBeep);
   playBeepRef.current = playBeep;
 
-  // Single mount effect: sync class and auto-checkin once without loop
+  // Single mount effect: sync class and prefill RA without blind auto-checkin conflicts
   useEffect(() => {
     const turmaParam = initialClassId || getPortalParam('turma') || getPortalParam('turmaid');
     if (turmaParam) {
@@ -239,54 +263,64 @@ export const SecureStudentPortal: React.FC<SecureStudentPortalProps> = ({
     }
 
     const savedRa = getPortalParam('ra') || getPortalParam('matricula') || (typeof window !== 'undefined' ? localStorage.getItem('bmf4_student_saved_ra') : null);
-    if (savedRa && savedRa.trim() && isSessionLiveRef.current) {
-      setIsAutoCheckingIn(true);
-      try {
-        const cleanRa = savedRa.trim().toUpperCase();
-        const result = studentSelfCheckinRef.current(cleanRa, tokenToUseRef.current, false, activePeriodRef.current as ClassPeriod);
-        if (result.success && result.student) {
-          setSavedDeviceStudentName(result.student.name);
-          const now = new Date();
-          const authHash = `BMF4-${Math.random().toString(36).substring(2, 8).toUpperCase()}-${now.getHours()}${now.getMinutes()}`;
-          const matchedCls = resolveConfirmedClass(result.student);
-          setConfirmedData({
-            studentName: result.student.name,
-            studentRa: result.student.registrationNumber,
-            className: matchedCls?.name || 'Turma B',
-            discipline: matchedCls?.discipline || currentClassRef.current?.discipline || 'BMF4 - Bases Morfofuncionais 4',
-            period: periodLabelRef.current,
-            timestamp: now.toLocaleTimeString('pt-BR'),
-            date: now.toLocaleDateString('pt-BR'),
-            authCode: authHash,
-          });
-          setFeedbackWarning(null);
-          playBeepRef.current('success');
-          setViewMode('receipt');
-        } else if (result.alreadyPresent && result.student) {
-          setSavedDeviceStudentName(result.student.name);
-          const now = new Date();
-          const authHash = `BMF4-${Math.random().toString(36).substring(2, 8).toUpperCase()}-${now.getHours()}${now.getMinutes()}`;
-          const matchedCls = resolveConfirmedClass(result.student);
-          setConfirmedData({
-            studentName: result.student.name,
-            studentRa: result.student.registrationNumber,
-            className: matchedCls?.name || 'Turma B',
-            discipline: matchedCls?.discipline || currentClassRef.current?.discipline || 'BMF4 - Bases Morfofuncionais 4',
-            period: periodLabelRef.current,
-            timestamp: result.existingRecord?.timestamp || now.toLocaleTimeString('pt-BR'),
-            date: now.toLocaleDateString('pt-BR'),
-            authCode: authHash,
-          });
-          setFeedbackWarning(
-            result.message || `❌ Presença já registrada anteriormente nesta aula! O aluno(a) ${result.student.name} (RA: ${result.student.registrationNumber}) já possui presença confirmada.`
-          );
-          playBeepRef.current('warning');
-          setViewMode('receipt');
-        } else {
+    if (savedRa && savedRa.trim()) {
+      const clean = savedRa.trim().toUpperCase();
+      setRaInput(clean);
+      const savedName = typeof window !== 'undefined' ? localStorage.getItem('bmf4_student_saved_name') : null;
+      if (savedName) {
+        setSavedDeviceStudentName(savedName);
+      }
+
+      // Only auto-submit if explicitly requested in URL (e.g. ?auto=true), otherwise allow manual confirmation
+      const explicitAuto = getPortalParam('auto') === 'true' || getPortalParam('autocheckin') === '1';
+      if (explicitAuto && isSessionLiveRef.current) {
+        setIsAutoCheckingIn(true);
+        try {
+          const result = studentSelfCheckinRef.current(clean, tokenToUseRef.current, false, activePeriodRef.current as ClassPeriod, targetSession?.id);
+          if (result.success && result.student) {
+            setSavedDeviceStudentName(result.student.name);
+            const now = new Date();
+            const authHash = `BMF4-${Math.random().toString(36).substring(2, 8).toUpperCase()}-${now.getHours()}${now.getMinutes()}`;
+            const matchedCls = resolveConfirmedClass(result.student);
+            setConfirmedData({
+              studentName: result.student.name,
+              studentRa: result.student.registrationNumber,
+              className: matchedCls?.name || 'Turma B',
+              discipline: matchedCls?.discipline || currentClassRef.current?.discipline || 'BMF4 - Bases Morfofuncionais 4',
+              period: periodLabelRef.current,
+              timestamp: now.toLocaleTimeString('pt-BR'),
+              date: now.toLocaleDateString('pt-BR'),
+              authCode: authHash,
+            });
+            setFeedbackWarning(null);
+            playBeepRef.current('success');
+            setViewMode('receipt');
+          } else if (result.alreadyPresent && result.student) {
+            setSavedDeviceStudentName(result.student.name);
+            const now = new Date();
+            const authHash = `BMF4-${Math.random().toString(36).substring(2, 8).toUpperCase()}-${now.getHours()}${now.getMinutes()}`;
+            const matchedCls = resolveConfirmedClass(result.student);
+            setConfirmedData({
+              studentName: result.student.name,
+              studentRa: result.student.registrationNumber,
+              className: matchedCls?.name || 'Turma B',
+              discipline: matchedCls?.discipline || currentClassRef.current?.discipline || 'BMF4 - Bases Morfofuncionais 4',
+              period: periodLabelRef.current,
+              timestamp: result.existingRecord?.timestamp || now.toLocaleTimeString('pt-BR'),
+              date: now.toLocaleDateString('pt-BR'),
+              authCode: authHash,
+            });
+            setFeedbackWarning(
+              result.message || `Presença já registrada anteriormente nesta aula para o aluno(a) ${result.student.name}.`
+            );
+            playBeepRef.current('warning');
+            setViewMode('receipt');
+          } else {
+            setIsAutoCheckingIn(false);
+          }
+        } catch (_) {
           setIsAutoCheckingIn(false);
         }
-      } catch (_) {
-        setIsAutoCheckingIn(false);
       }
     }
   }, []); // Run strictly once on mount
@@ -311,10 +345,16 @@ export const SecureStudentPortal: React.FC<SecureStudentPortalProps> = ({
       return;
     }
 
+    if (isSessionLocked) {
+      setFeedbackError('A chamada desta aula foi encerrada pelo professor e novos check-ins estão bloqueados.');
+      playBeep('alert');
+      return;
+    }
+
     setIsSubmitting(true);
 
     try {
-      const result = studentSelfCheckin(cleanRa, tokenToUse, allowOtherClass, activePeriod as ClassPeriod);
+      const result = studentSelfCheckin(cleanRa, tokenToUse, allowOtherClass, activePeriod as ClassPeriod, targetSession?.id);
 
       if (result.needsOtherClassConfirmation) {
         setOtherClassPrompt({
@@ -761,25 +801,72 @@ export const SecureStudentPortal: React.FC<SecureStudentPortalProps> = ({
         {viewMode === 'checkin' && (
           <div className="bg-slate-900 border border-slate-800 rounded-3xl p-5 sm:p-6 shadow-2xl space-y-4 animate-in fade-in duration-150">
             
-            <div className="p-3 rounded-2xl bg-sky-950/60 border border-sky-800/60 flex items-center justify-between">
+            <div className={`p-3 rounded-2xl border flex items-center justify-between ${
+              isSessionLocked
+                ? 'bg-rose-950/60 border-rose-800/60'
+                : 'bg-sky-950/60 border-sky-800/60'
+            }`}>
               <div className="flex items-center gap-2 min-w-0">
-                <span className="w-2.5 h-2.5 rounded-full bg-emerald-400 animate-pulse shrink-0" />
+                <span className={`w-2.5 h-2.5 rounded-full shrink-0 ${
+                  isSessionLocked ? 'bg-rose-500' : 'bg-emerald-400 animate-pulse'
+                }`} />
                 <div className="min-w-0">
                   <h3 className="text-xs font-bold text-white truncate">
-                    {activeSession?.topic || 'Aula Prática BMF4'}
+                    {targetSession?.topic || activeSession?.topic || 'Aula Prática BMF4'}
                   </h3>
-                  <p className="text-[10px] text-sky-300">
-                    Chamada Ativa: <strong className="text-white">{periodLabel}</strong>
+                  <p className="text-[10px] text-slate-300">
+                    {isSessionLocked ? (
+                      <span className="text-rose-300 font-semibold">Chamada Encerrada</span>
+                    ) : (
+                      <>Chamada Ativa: <strong className="text-white">{periodLabel}</strong></>
+                    )}
                   </p>
                 </div>
               </div>
 
               <div className="text-right shrink-0">
-                <span className="text-[9px] font-mono bg-sky-900/80 px-2 py-0.5 rounded text-sky-200 border border-sky-700/50">
-                  VALIDAÇÃO ATIVA
+                <span className={`text-[9px] font-mono px-2 py-0.5 rounded border font-bold ${
+                  isSessionLocked
+                    ? 'bg-rose-900/80 text-rose-200 border-rose-700/50'
+                    : 'bg-sky-900/80 text-sky-200 border-sky-700/50'
+                }`}>
+                  {isSessionLocked ? 'BLOQUEADA' : 'VALIDAÇÃO ATIVA'}
                 </span>
               </div>
             </div>
+
+            {isSessionLocked && (
+              <div className="p-3.5 rounded-2xl bg-rose-950/70 border border-rose-800/80 text-rose-200 text-xs space-y-2">
+                <div className="flex items-start gap-2">
+                  <Lock className="w-4 h-4 text-rose-400 shrink-0 mt-0.5" />
+                  <div>
+                    <p className="font-bold text-white">Esta aula já foi encerrada pelo professor.</p>
+                    <p className="text-[11px] text-rose-300/90 leading-relaxed mt-0.5">
+                      Novos check-ins para este QR Code estão desativados. Verifique no telão do laboratório se uma nova aula ou etapa foi iniciada.
+                    </p>
+                  </div>
+                </div>
+
+                {newerActiveSession && (
+                  <div className="pt-2 border-t border-rose-800/50 flex items-center justify-between gap-2">
+                    <span className="text-[11px] text-teal-300 font-medium">
+                      Há uma Nova Aula ativa disponível!
+                    </span>
+                    <button
+                      type="button"
+                      onClick={() => {
+                        if (typeof window !== 'undefined') {
+                          window.location.href = window.location.pathname;
+                        }
+                      }}
+                      className="px-3 py-1.5 rounded-xl bg-teal-600 hover:bg-teal-500 text-white font-bold text-[11px] cursor-pointer"
+                    >
+                      Acessar Nova Aula
+                    </button>
+                  </div>
+                )}
+              </div>
+            )}
 
             {isAutoCheckingIn && (
               <div className="p-4 rounded-2xl bg-emerald-950/80 border border-emerald-500/50 text-center space-y-2 animate-pulse">
@@ -914,11 +1001,15 @@ export const SecureStudentPortal: React.FC<SecureStudentPortalProps> = ({
 
               <button
                 type="submit"
-                disabled={isSubmitting}
-                className="w-full py-4 rounded-2xl bg-emerald-600 hover:bg-emerald-500 active:scale-98 disabled:opacity-50 text-white font-black text-sm tracking-wide shadow-lg shadow-emerald-950 transition-all flex items-center justify-center gap-2 cursor-pointer"
+                disabled={isSubmitting || isSessionLocked}
+                className={`w-full py-4 rounded-2xl active:scale-98 disabled:opacity-50 text-white font-black text-sm tracking-wide shadow-lg transition-all flex items-center justify-center gap-2 cursor-pointer ${
+                  isSessionLocked
+                    ? 'bg-slate-700 hover:bg-slate-700 shadow-none cursor-not-allowed'
+                    : 'bg-emerald-600 hover:bg-emerald-500 shadow-emerald-950'
+                }`}
               >
-                <Check className="w-5 h-5 stroke-[3]" />
-                {isSubmitting ? 'Validando Presença...' : 'CONFIRMAR MINHA PRESENÇA'}
+                {isSessionLocked ? <Lock className="w-5 h-5 text-rose-400" /> : <Check className="w-5 h-5 stroke-[3]" />}
+                {isSubmitting ? 'Validando Presença...' : isSessionLocked ? 'Chamada Encerrada (Check-in Bloqueado)' : 'CONFIRMAR MINHA PRESENÇA'}
               </button>
 
             </form>

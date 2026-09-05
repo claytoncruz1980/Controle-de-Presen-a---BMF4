@@ -894,9 +894,19 @@ export const StudentsManagement: React.FC = () => {
                       <div key={session.id} className="p-3 bg-slate-50 rounded-2xl border border-slate-200/80 flex items-center justify-between text-xs">
                         <div>
                           <div className="font-bold text-slate-800">{session.topic}</div>
-                          <div className="text-[11px] text-slate-500">
-                            Data: {session.date}
+                          <div className="text-[11px] text-slate-500 flex items-center gap-1.5 flex-wrap mt-0.5">
+                            <span>Data: <strong className="text-slate-700">{session.date ? session.date.split('-').reverse().join('/') : ''}</strong></span>
+                            <span>•</span>
+                            <span className="flex items-center gap-1">
+                              <Clock className="w-3 h-3 text-sky-600" />
+                              <span>Horário da Chamada: <strong className="text-slate-700 font-mono">{session.startTime || '07:30'}{session.endTime ? ` às ${session.endTime}` : ''}</strong></span>
+                            </span>
                           </div>
+                          {record?.timestamp && (
+                            <div className="text-[10px] text-emerald-700 font-mono mt-0.5">
+                              Check-in Aluno: {record.timestamp} {record.checkinMethod === 'qrcode' ? '(QR Code)' : '(Manual)'}
+                            </div>
+                          )}
                           {record?.observation && (
                             <div className="text-[10px] text-sky-700 mt-0.5 italic">{record.observation}</div>
                           )}

@@ -353,80 +353,80 @@ export const LabProjectionScreen: React.FC<LabProjectionScreenProps> = ({
 
   // Stage names map
   const stageLabels: Record<string, string> = {
-    'p1_start': '1ª Aula (Início)',
-    'p1_end': '1ª Aula (Final)',
-    'p2_start': '2ª Aula (Início)',
-    'p2_end': '2ª Aula (Final)',
+    'p1_start': '1ª Aula',
+    'p1_end': '1ª Aula',
+    'p2_start': '2ª Aula',
+    'p2_end': '2ª Aula',
     '1': '1ª Aula',
     '2': '2ª Aula',
     'both': 'Chamada Integral',
-    'activity_single': 'Atividade Prática'
+    'activity_single': 'Chamada Integral (Atividade Prática)'
   };
 
   // Rich stage configurations for high-contrast, crystal-clear projection
   const stageConfig: Record<string, { label: string; shortLabel: string; badgeColor: string; bgSoft: string; border: string; desc: string }> = {
     'p1_start': {
-      label: '1ª Aula — Início (Entrada)',
-      shortLabel: '1ª Aula (Início)',
-      badgeColor: 'bg-emerald-600 text-white',
-      bgSoft: 'bg-emerald-500/15 text-emerald-300 border-emerald-500/30',
-      border: 'border-emerald-500',
-      desc: 'Registro de entrada e início da primeira aula',
-    },
-    'p1_end': {
-      label: '1ª Aula — Final (Saída)',
-      shortLabel: '1ª Aula (Final)',
-      badgeColor: 'bg-teal-600 text-white',
-      bgSoft: 'bg-teal-500/15 text-teal-300 border-teal-500/30',
-      border: 'border-teal-500',
-      desc: 'Registro de saída / conclusão da primeira aula',
-    },
-    'p2_start': {
-      label: '2ª Aula — Início (Retorno)',
-      shortLabel: '2ª Aula (Início)',
-      badgeColor: 'bg-sky-600 text-white',
-      bgSoft: 'bg-sky-500/15 text-sky-300 border-sky-500/30',
-      border: 'border-sky-500',
-      desc: 'Retorno do intervalo / início da segunda aula',
-    },
-    'p2_end': {
-      label: '2ª Aula — Final (Conclusão)',
-      shortLabel: '2ª Aula (Final)',
-      badgeColor: 'bg-purple-600 text-white',
-      bgSoft: 'bg-purple-500/15 text-purple-300 border-purple-500/30',
-      border: 'border-purple-500',
-      desc: 'Encerramento e saída da segunda aula',
-    },
-    '1': {
-      label: '1ª Aula (Chamada Geral)',
+      label: '1ª Aula',
       shortLabel: '1ª Aula',
       badgeColor: 'bg-emerald-600 text-white',
       bgSoft: 'bg-emerald-500/15 text-emerald-300 border-emerald-500/30',
       border: 'border-emerald-500',
-      desc: 'Presença geral na primeira aula',
+      desc: 'Registro de presença para a primeira aula',
+    },
+    'p1_end': {
+      label: '1ª Aula',
+      shortLabel: '1ª Aula',
+      badgeColor: 'bg-emerald-600 text-white',
+      bgSoft: 'bg-emerald-500/15 text-emerald-300 border-emerald-500/30',
+      border: 'border-emerald-500',
+      desc: 'Registro de presença para a primeira aula',
+    },
+    'p2_start': {
+      label: '2ª Aula',
+      shortLabel: '2ª Aula',
+      badgeColor: 'bg-sky-600 text-white',
+      bgSoft: 'bg-sky-500/15 text-sky-300 border-sky-500/30',
+      border: 'border-sky-500',
+      desc: 'Registro de presença para a segunda aula',
+    },
+    'p2_end': {
+      label: '2ª Aula',
+      shortLabel: '2ª Aula',
+      badgeColor: 'bg-sky-600 text-white',
+      bgSoft: 'bg-sky-500/15 text-sky-300 border-sky-500/30',
+      border: 'border-sky-500',
+      desc: 'Registro de presença para a segunda aula',
+    },
+    '1': {
+      label: '1ª Aula',
+      shortLabel: '1ª Aula',
+      badgeColor: 'bg-emerald-600 text-white',
+      bgSoft: 'bg-emerald-500/15 text-emerald-300 border-emerald-500/30',
+      border: 'border-emerald-500',
+      desc: 'Registro de presença para a primeira aula',
     },
     '2': {
-      label: '2ª Aula (Chamada Geral)',
+      label: '2ª Aula',
       shortLabel: '2ª Aula',
-      badgeColor: 'bg-purple-600 text-white',
-      bgSoft: 'bg-purple-500/15 text-purple-300 border-purple-500/30',
-      border: 'border-purple-500',
-      desc: 'Presença geral na segunda aula',
+      badgeColor: 'bg-sky-600 text-white',
+      bgSoft: 'bg-sky-500/15 text-sky-300 border-sky-500/30',
+      border: 'border-sky-500',
+      desc: 'Registro de presença para a segunda aula',
     },
     'both': {
       label: 'Chamada Integral (1ª e 2ª Aulas)',
       shortLabel: 'Chamada Integral',
-      badgeColor: 'bg-indigo-600 text-white',
-      bgSoft: 'bg-indigo-500/15 text-indigo-300 border-indigo-500/30',
-      border: 'border-indigo-500',
+      badgeColor: 'bg-amber-500 text-slate-950 font-bold',
+      bgSoft: 'bg-amber-500/15 text-amber-300 border-amber-500/30',
+      border: 'border-amber-500',
       desc: 'Presença integral para ambas as aulas',
     },
     'activity_single': {
-      label: 'Atividade Prática de Laboratório',
-      shortLabel: 'Atividade Prática',
-      badgeColor: 'bg-amber-600 text-white',
-      bgSoft: 'bg-amber-500/15 text-amber-300 border-amber-500/30',
-      border: 'border-amber-500',
+      label: 'Chamada Integral (Atividade Prática)',
+      shortLabel: 'Chamada Integral',
+      badgeColor: 'bg-teal-600 text-white',
+      bgSoft: 'bg-teal-500/15 text-teal-300 border-teal-500/30',
+      border: 'border-teal-500',
       desc: 'Chamada de atividade prática individual/grupo',
     }
   };
@@ -445,45 +445,18 @@ export const LabProjectionScreen: React.FC<LabProjectionScreenProps> = ({
   const nextStage = useMemo(() => {
     switch (currentPeriod) {
       case 'p1_start':
-        return {
-          period: 'p1_end' as ClassPeriod,
-          name: '1ª Aula (Final)',
-          fullName: '1ª Aula — Final (Saída)',
-          actionName: 'Avançar para 1ª Aula (Final)',
-          type: 'period' as const,
-          classId: effectiveClassId,
-          badgeColor: 'bg-teal-600 text-white',
-        };
       case 'p1_end':
+      case '1':
         return {
-          period: 'p2_start' as ClassPeriod,
-          name: '2ª Aula (Início)',
-          fullName: '2ª Aula — Início (Retorno)',
-          actionName: 'Avançar para 2ª Aula (Início)',
+          period: '2' as ClassPeriod,
+          name: '2ª Aula',
+          fullName: '2ª Aula',
+          actionName: 'Avançar para 2ª Aula',
           type: 'period' as const,
           classId: effectiveClassId,
           badgeColor: 'bg-sky-600 text-white',
         };
       case 'p2_start':
-        return {
-          period: 'p2_end' as ClassPeriod,
-          name: '2ª Aula (Final)',
-          fullName: '2ª Aula — Final (Conclusão)',
-          actionName: 'Avançar para 2ª Aula (Final)',
-          type: 'period' as const,
-          classId: effectiveClassId,
-          badgeColor: 'bg-purple-600 text-white',
-        };
-      case '1':
-        return {
-          period: '2' as ClassPeriod,
-          name: '2ª Aula',
-          fullName: '2ª Aula (Chamada Geral)',
-          actionName: 'Avançar para 2ª Aula',
-          type: 'period' as const,
-          classId: effectiveClassId,
-          badgeColor: 'bg-purple-600 text-white',
-        };
       case 'p2_end':
       case '2':
       case 'both':
@@ -530,7 +503,7 @@ export const LabProjectionScreen: React.FC<LabProjectionScreenProps> = ({
         topic: 'Aula BMF4 - Morfofuncional',
         activityCategory: 'pratica',
         activityType: 'aula_pratica',
-        activePeriod: 'p1_start',
+        activePeriod: '1',
       });
       const targetClassName = classes.find(c => c.id === targetClassId)?.name || 'Nova Turma';
       setTransitionToast({
@@ -545,7 +518,7 @@ export const LabProjectionScreen: React.FC<LabProjectionScreenProps> = ({
         topic: 'Aula BMF4 - Morfofuncional',
         activityCategory: 'pratica',
         activityType: 'aula_pratica',
-        activePeriod: 'p1_start',
+        activePeriod: '1',
       });
       setTransitionToast({
         title: 'Nova Aula Iniciada!',
@@ -812,7 +785,7 @@ export const LabProjectionScreen: React.FC<LabProjectionScreenProps> = ({
                       topic: 'Aula BMF4 - Morfofuncional',
                       activityCategory: 'pratica',
                       activityType: 'aula_pratica',
-                      activePeriod: 'p1_start'
+                      activePeriod: '1'
                     });
                     playBeep('session_start');
                   }}
@@ -997,77 +970,41 @@ export const LabProjectionScreen: React.FC<LabProjectionScreenProps> = ({
             <div className="lg:col-span-7 flex flex-col items-center text-center space-y-2.5 sm:space-y-4 w-full">
               
               {/* Stage / Period Selector Pills in Telão */}
-              <div className="flex items-center justify-start sm:justify-center gap-1 p-1 bg-slate-900/90 rounded-xl sm:rounded-2xl border border-slate-800 shadow-inner w-full max-w-full overflow-x-auto no-scrollbar sm:flex-wrap">
+              <div className="flex items-center justify-start sm:justify-center gap-1.5 p-1.5 bg-slate-900/90 rounded-xl sm:rounded-2xl border border-slate-800 shadow-inner w-full max-w-full overflow-x-auto no-scrollbar sm:flex-wrap">
                 <button
                   type="button"
-                  id="btn-telao-period-p1-start"
+                  id="btn-telao-period-1"
                   onClick={() => {
-                    setActivePeriod('p1_start');
+                    setActivePeriod('1');
                     playBeep('click');
                   }}
-                  className={`px-2 sm:px-3 py-1 sm:py-1.5 rounded-lg sm:rounded-xl text-[10px] sm:text-xs font-bold transition-all cursor-pointer flex items-center gap-1 sm:gap-1.5 whitespace-nowrap shrink-0 ${
-                    currentPeriod === 'p1_start'
+                  className={`px-3 sm:px-4 py-1.5 sm:py-2 rounded-lg sm:rounded-xl text-[11px] sm:text-xs font-bold transition-all cursor-pointer flex items-center gap-1.5 whitespace-nowrap shrink-0 ${
+                    currentPeriod === '1' || currentPeriod === 'p1_start' || currentPeriod === 'p1_end'
                       ? 'bg-emerald-600 text-white shadow-md scale-102 ring-1 sm:ring-2 ring-emerald-400/50'
                       : 'text-slate-400 hover:text-white hover:bg-slate-800'
                   }`}
-                  title="1ª Aula (Início) - Entrada da 1ª aula"
+                  title="1ª Aula - Chamada da primeira aula"
                 >
-                  <span className="w-1.5 h-1.5 sm:w-2 sm:h-2 rounded-full bg-emerald-300"></span>
-                  <span>1ª Aula (Início)</span>
+                  <span className="w-2 h-2 rounded-full bg-emerald-300"></span>
+                  <span>1ª Aula</span>
                 </button>
 
                 <button
                   type="button"
-                  id="btn-telao-period-p1-end"
+                  id="btn-telao-period-2"
                   onClick={() => {
-                    setActivePeriod('p1_end');
+                    setActivePeriod('2');
                     playBeep('click');
                   }}
-                  className={`px-2 sm:px-3 py-1 sm:py-1.5 rounded-lg sm:rounded-xl text-[10px] sm:text-xs font-bold transition-all cursor-pointer flex items-center gap-1 sm:gap-1.5 whitespace-nowrap shrink-0 ${
-                    currentPeriod === 'p1_end' || currentPeriod === '1'
-                      ? 'bg-teal-600 text-white shadow-md scale-102 ring-1 sm:ring-2 ring-teal-400/50'
-                      : 'text-slate-400 hover:text-white hover:bg-slate-800'
-                  }`}
-                  title="1ª Aula (Final) - Saída ou chamada única da 1ª aula"
-                >
-                  <span className="w-1.5 h-1.5 sm:w-2 sm:h-2 rounded-full bg-teal-300"></span>
-                  <span>1ª Aula (Final)</span>
-                </button>
-
-                <button
-                  type="button"
-                  id="btn-telao-period-p2-start"
-                  onClick={() => {
-                    setActivePeriod('p2_start');
-                    playBeep('click');
-                  }}
-                  className={`px-2 sm:px-3 py-1 sm:py-1.5 rounded-lg sm:rounded-xl text-[10px] sm:text-xs font-bold transition-all cursor-pointer flex items-center gap-1 sm:gap-1.5 whitespace-nowrap shrink-0 ${
-                    currentPeriod === 'p2_start'
+                  className={`px-3 sm:px-4 py-1.5 sm:py-2 rounded-lg sm:rounded-xl text-[11px] sm:text-xs font-bold transition-all cursor-pointer flex items-center gap-1.5 whitespace-nowrap shrink-0 ${
+                    currentPeriod === '2' || currentPeriod === 'p2_start' || currentPeriod === 'p2_end'
                       ? 'bg-sky-600 text-white shadow-md scale-102 ring-1 sm:ring-2 ring-sky-400/50'
                       : 'text-slate-400 hover:text-white hover:bg-slate-800'
                   }`}
-                  title="2ª Aula (Início) - Retorno do intervalo"
+                  title="2ª Aula - Chamada da segunda aula"
                 >
-                  <span className="w-1.5 h-1.5 sm:w-2 sm:h-2 rounded-full bg-sky-300"></span>
-                  <span>2ª Aula (Início)</span>
-                </button>
-
-                <button
-                  type="button"
-                  id="btn-telao-period-p2-end"
-                  onClick={() => {
-                    setActivePeriod('p2_end');
-                    playBeep('click');
-                  }}
-                  className={`px-2 sm:px-3 py-1 sm:py-1.5 rounded-lg sm:rounded-xl text-[10px] sm:text-xs font-bold transition-all cursor-pointer flex items-center gap-1 sm:gap-1.5 whitespace-nowrap shrink-0 ${
-                    currentPeriod === 'p2_end' || currentPeriod === '2'
-                      ? 'bg-purple-600 text-white shadow-md scale-102 ring-1 sm:ring-2 ring-purple-400/50'
-                      : 'text-slate-400 hover:text-white hover:bg-slate-800'
-                  }`}
-                  title="2ª Aula (Final) - Saída ou chamada única da 2ª aula"
-                >
-                  <span className="w-1.5 h-1.5 sm:w-2 sm:h-2 rounded-full bg-purple-300"></span>
-                  <span>2ª Aula (Final)</span>
+                  <span className="w-2 h-2 rounded-full bg-sky-300"></span>
+                  <span>2ª Aula</span>
                 </button>
 
                 <button
@@ -1077,14 +1014,15 @@ export const LabProjectionScreen: React.FC<LabProjectionScreenProps> = ({
                     setActivePeriod('both');
                     playBeep('click');
                   }}
-                  className={`px-2 sm:px-3 py-1 sm:py-1.5 rounded-lg sm:rounded-xl text-[10px] sm:text-xs font-bold transition-all cursor-pointer flex items-center gap-1 sm:gap-1.5 whitespace-nowrap shrink-0 ${
+                  className={`px-3 sm:px-4 py-1.5 sm:py-2 rounded-lg sm:rounded-xl text-[11px] sm:text-xs font-bold transition-all cursor-pointer flex items-center gap-1.5 whitespace-nowrap shrink-0 ${
                     currentPeriod === 'both'
-                      ? 'bg-white text-slate-900 shadow-md font-black scale-102'
+                      ? 'bg-amber-400 text-slate-950 font-black shadow-md scale-102 ring-1 sm:ring-2 ring-amber-300'
                       : 'text-slate-400 hover:text-white hover:bg-slate-800'
                   }`}
                   title="Chamada Integral (1ª e 2ª Aulas)"
                 >
-                  <span>Integral</span>
+                  <span className="w-2 h-2 rounded-full bg-amber-600"></span>
+                  <span>Chamada Integral</span>
                 </button>
               </div>
 
@@ -1279,7 +1217,7 @@ export const LabProjectionScreen: React.FC<LabProjectionScreenProps> = ({
                     topic: 'Aula BMF4 - Morfofuncional',
                     activityCategory: 'pratica',
                     activityType: 'aula_pratica',
-                    activePeriod: 'p1_start'
+                    activePeriod: '1'
                   });
                   playBeep('session_start');
                 }}

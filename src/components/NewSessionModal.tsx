@@ -164,10 +164,10 @@ export const NewSessionModal: React.FC<NewSessionModalProps> = ({
     setCategory(newCat);
     if (newCat === 'teorica') {
       setActivityType('aula_teorica');
-      setActivePeriod('p1_start');
+      setActivePeriod('1');
     } else {
       setActivityType('aula_pratica');
-      setActivePeriod('p1_start');
+      setActivePeriod('1');
     }
   };
 
@@ -176,7 +176,7 @@ export const NewSessionModal: React.FC<NewSessionModalProps> = ({
     if (newType.startsWith('atividade_pratica') || newType === 'prova_teorica') {
       setActivePeriod('activity_single');
     } else {
-      setActivePeriod('p1_start');
+      setActivePeriod('1');
     }
   };
 
@@ -456,11 +456,9 @@ export const NewSessionModal: React.FC<NewSessionModalProps> = ({
                   onChange={(e) => setActivePeriod(e.target.value as ClassPeriod)}
                   className="w-full px-3 py-2 bg-slate-50 border border-slate-200 rounded-xl focus:bg-white focus:outline-none focus:ring-2 focus:ring-sky-500 font-semibold text-slate-800 text-xs"
                 >
-                  <option value="p1_start">1ª Aula (Início)</option>
-                  <option value="p1_end">1ª Aula (Final / Única)</option>
-                  <option value="p2_start">2ª Aula (Início)</option>
-                  <option value="p2_end">2ª Aula (Final / Única)</option>
-                  <option value="both">Chamada Integral (Todo o Período)</option>
+                  <option value="1">1ª Aula</option>
+                  <option value="2">2ª Aula</option>
+                  <option value="both">Chamada Integral (1ª e 2ª Aula)</option>
                 </select>
               )}
             </div>

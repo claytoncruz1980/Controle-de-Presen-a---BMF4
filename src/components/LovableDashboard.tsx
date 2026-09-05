@@ -417,26 +417,30 @@ export const LovableDashboard: React.FC<LovableDashboardProps> = ({
               <button
                 id="btn-reopen-locked-call"
                 onClick={() => reopenCurrentSession(activeSession?.id, selectedClassId)}
-                title="Reabrir chamada encerrada"
+                title="Reabrir chamada encerrada para esta turma"
                 className="px-4 py-2.5 rounded-2xl bg-teal-700 hover:bg-teal-800 text-white shadow-2xs text-xs sm:text-sm font-bold flex items-center gap-1.5 transition-all active:scale-95 cursor-pointer"
               >
                 <RotateCcw className="w-3.5 h-3.5" />
-                <span>Reabrir</span>
+                <span>Reabrir Chamada</span>
               </button>
               <button
                 id="btn-start-new-session-after-lock"
                 onClick={() => {
-                  startNewSession({
-                    classGroupId: selectedClassId,
-                    topic: 'Aula BMF4 - Morfofuncional',
-                    activityCategory: 'pratica',
-                    activityType: 'aula_pratica',
-                    activePeriod: 'p1_start'
-                  });
-                  showToast('Nova aula iniciada com sucesso!');
-                  playBeep('session_start');
+                  if (onOpenNewSession) {
+                    onOpenNewSession();
+                  } else {
+                    startNewSession({
+                      classGroupId: selectedClassId,
+                      topic: 'Aula BMF4 - Morfofuncional',
+                      activityCategory: 'pratica',
+                      activityType: 'aula_pratica',
+                      activePeriod: '1'
+                    });
+                    showToast('Nova aula iniciada com sucesso!');
+                    playBeep('session_start');
+                  }
                 }}
-                title="Iniciar uma nova chamada para esta turma"
+                title="Configurar e iniciar uma nova aula para esta turma"
                 className="px-4 py-2.5 rounded-2xl bg-slate-900 hover:bg-slate-800 text-white shadow-2xs text-xs sm:text-sm font-bold flex items-center gap-1.5 transition-all active:scale-95 cursor-pointer"
               >
                 <Plus className="w-3.5 h-3.5 text-teal-400" />
@@ -495,25 +499,38 @@ export const LovableDashboard: React.FC<LovableDashboardProps> = ({
 
           {/* When No Active Live/Locked Session: Open or Start New */}
           {!isLocked && !isLive && !isPaused && (
-            <button
-              id="btn-start-fresh-session"
-              onClick={() => {
-                startNewSession({
-                  classGroupId: selectedClassId,
-                  topic: 'Aula BMF4 - Morfofuncional',
-                  activityCategory: 'pratica',
-                  activityType: 'aula_pratica',
-                  activePeriod: 'p1_start'
-                });
-                showToast('Chamada iniciada com sucesso!');
-                playBeep('session_start');
-              }}
-              title="Iniciar chamada para esta turma"
-              className="px-5 py-2.5 rounded-2xl bg-teal-700 hover:bg-teal-800 text-white shadow-2xs text-xs sm:text-sm font-bold flex items-center gap-1.5 transition-all active:scale-95 cursor-pointer"
-            >
-              <CheckCircle2 className="w-3.5 h-3.5" />
-              <span>Abrir Chamada</span>
-            </button>
+            <div className="flex items-center gap-2">
+              <button
+                id="btn-start-fresh-session"
+                onClick={() => {
+                  startNewSession({
+                    classGroupId: selectedClassId,
+                    topic: 'Aula BMF4 - Morfofuncional',
+                    activityCategory: 'pratica',
+                    activityType: 'aula_pratica',
+                    activePeriod: '1'
+                  });
+                  showToast('Chamada iniciada com sucesso!');
+                  playBeep('session_start');
+                }}
+                title="Iniciar chamada imediata para esta turma"
+                className="px-4 py-2.5 rounded-2xl bg-teal-700 hover:bg-teal-800 text-white shadow-2xs text-xs sm:text-sm font-bold flex items-center gap-1.5 transition-all active:scale-95 cursor-pointer"
+              >
+                <CheckCircle2 className="w-3.5 h-3.5" />
+                <span>Abrir Chamada</span>
+              </button>
+              {onOpenNewSession && (
+                <button
+                  id="btn-modal-new-session-top"
+                  onClick={onOpenNewSession}
+                  title="Configurar detalhes de uma nova aula (Tema, Roteiro, Laboratório)"
+                  className="px-4 py-2.5 rounded-2xl bg-slate-900 hover:bg-slate-800 text-white shadow-2xs text-xs sm:text-sm font-bold flex items-center gap-1.5 transition-all active:scale-95 cursor-pointer"
+                >
+                  <Plus className="w-3.5 h-3.5 text-teal-400" />
+                  <span>Nova Aula</span>
+                </button>
+              )}
+            </div>
           )}
 
           {/* Scanner RA Button */}
@@ -556,72 +573,45 @@ export const LovableDashboard: React.FC<LovableDashboardProps> = ({
           ) : (
             <div className="flex items-center gap-1 overflow-x-auto no-scrollbar p-1 bg-slate-100 rounded-xl text-xs font-bold">
               <button
-                id="btn-period-p1-start"
-                onClick={() => setActivePeriod('p1_start')}
-                className={`px-2.5 py-1 rounded-lg transition-all cursor-pointer flex items-center gap-1.5 shrink-0 ${
-                  currentPeriod === 'p1_start'
-                    ? 'bg-teal-600 text-white shadow-2xs'
+                id="btn-period-1"
+                onClick={() => setActivePeriod('1')}
+                className={`px-3 py-1.5 rounded-lg transition-all cursor-pointer flex items-center gap-1.5 shrink-0 ${
+                  currentPeriod === '1' || currentPeriod === 'p1_start' || currentPeriod === 'p1_end'
+                    ? 'bg-teal-600 text-white shadow-2xs font-extrabold'
                     : 'text-slate-600 hover:text-slate-900 hover:bg-white/60'
                 }`}
-                title="1ª Aula (Início) - Registro no começo da aula"
+                title="1ª Aula - Chamada da primeira aula"
               >
-                <span className="w-1.5 h-1.5 rounded-full bg-emerald-300"></span>
-                <span>1ª Aula (Início)</span>
+                <span className="w-2 h-2 rounded-full bg-emerald-300"></span>
+                <span>1ª Aula</span>
               </button>
 
               <button
-                id="btn-period-p1-end"
-                onClick={() => setActivePeriod('p1_end')}
-                className={`px-2.5 py-1 rounded-lg transition-all cursor-pointer flex items-center gap-1.5 shrink-0 ${
-                  currentPeriod === 'p1_end' || currentPeriod === '1'
-                    ? 'bg-teal-600 text-white shadow-2xs'
+                id="btn-period-2"
+                onClick={() => setActivePeriod('2')}
+                className={`px-3 py-1.5 rounded-lg transition-all cursor-pointer flex items-center gap-1.5 shrink-0 ${
+                  currentPeriod === '2' || currentPeriod === 'p2_start' || currentPeriod === 'p2_end'
+                    ? 'bg-sky-600 text-white shadow-2xs font-extrabold'
                     : 'text-slate-600 hover:text-slate-900 hover:bg-white/60'
                 }`}
-                title="1ª Aula (Final) - Saída ou chamada única da 1ª aula"
+                title="2ª Aula - Chamada da segunda aula"
               >
-                <span className="w-1.5 h-1.5 rounded-full bg-teal-300"></span>
-                <span>1ª Aula (Final)</span>
-              </button>
-
-              <button
-                id="btn-period-p2-start"
-                onClick={() => setActivePeriod('p2_start')}
-                className={`px-2.5 py-1 rounded-lg transition-all cursor-pointer flex items-center gap-1.5 shrink-0 ${
-                  currentPeriod === 'p2_start'
-                    ? 'bg-sky-600 text-white shadow-2xs'
-                    : 'text-slate-600 hover:text-slate-900 hover:bg-white/60'
-                }`}
-                title="2ª Aula (Início) - Registro no retorno do intervalo"
-              >
-                <span className="w-1.5 h-1.5 rounded-full bg-sky-300"></span>
-                <span>2ª Aula (Início)</span>
-              </button>
-
-              <button
-                id="btn-period-p2-end"
-                onClick={() => setActivePeriod('p2_end')}
-                className={`px-2.5 py-1 rounded-lg transition-all cursor-pointer flex items-center gap-1.5 shrink-0 ${
-                  currentPeriod === 'p2_end' || currentPeriod === '2'
-                    ? 'bg-sky-600 text-white shadow-2xs'
-                    : 'text-slate-600 hover:text-slate-900 hover:bg-white/60'
-                }`}
-                title="2ª Aula (Final) - Saída ou chamada única da 2ª aula"
-              >
-                <span className="w-1.5 h-1.5 rounded-full bg-purple-300"></span>
-                <span>2ª Aula (Final)</span>
+                <span className="w-2 h-2 rounded-full bg-sky-300"></span>
+                <span>2ª Aula</span>
               </button>
 
               <button
                 id="btn-period-both"
                 onClick={() => setActivePeriod('both')}
-                className={`px-2.5 py-1 rounded-lg transition-all cursor-pointer text-[11px] shrink-0 ${
+                className={`px-3 py-1.5 rounded-lg transition-all cursor-pointer text-xs shrink-0 flex items-center gap-1.5 ${
                   currentPeriod === 'both'
-                    ? 'bg-white text-slate-900 shadow-2xs font-bold border border-slate-200'
-                    : 'text-slate-500 hover:text-slate-800'
+                    ? 'bg-slate-900 text-white shadow-2xs font-extrabold'
+                    : 'text-slate-600 hover:text-slate-900 hover:bg-white/60'
                 }`}
-                title="Chamada Integral (Corresponde a todo o período - 1ª e 2ª Aulas)"
+                title="Chamada Integral (Abrange 1ª e 2ª Aulas)"
               >
-                Chamada Integral
+                <span className="w-2 h-2 rounded-full bg-amber-300"></span>
+                <span>Chamada Integral</span>
               </button>
             </div>
           )}
@@ -1227,24 +1217,28 @@ export const LovableDashboard: React.FC<LovableDashboardProps> = ({
           </div>
         </div>
 
-        {/* Legenda dos 4 Checkpoints */}
+        {/* Legenda de Chamada */}
         <div className="flex flex-wrap items-center gap-2 px-3.5 py-2.5 bg-slate-50 border border-slate-200/80 rounded-2xl text-[11px] text-slate-600">
           <span className="font-bold text-slate-800 flex items-center gap-1.5 shrink-0">
             <Info className="w-3.5 h-3.5 text-sky-600" />
-            Legenda dos 4 Checkpoints:
+            Legenda de Chamada:
           </span>
           <div className="flex flex-wrap items-center gap-1.5">
-            <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-lg bg-white border border-emerald-200 text-emerald-800 font-bold">
+            <span className="inline-flex items-center gap-1 px-2.5 py-0.5 rounded-lg bg-white border border-emerald-200 text-emerald-800 font-bold">
               <span className="w-2 h-2 rounded-full bg-emerald-500"></span>
-              1ª Aula: (Início) • (Final)
+              1ª Aula
             </span>
-            <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-lg bg-white border border-indigo-200 text-indigo-800 font-bold">
-              <span className="w-2 h-2 rounded-full bg-indigo-500"></span>
-              2ª Aula: (Início) • (Final)
+            <span className="inline-flex items-center gap-1 px-2.5 py-0.5 rounded-lg bg-white border border-sky-200 text-sky-800 font-bold">
+              <span className="w-2 h-2 rounded-full bg-sky-500"></span>
+              2ª Aula
+            </span>
+            <span className="inline-flex items-center gap-1 px-2.5 py-0.5 rounded-lg bg-white border border-slate-300 text-slate-800 font-bold">
+              <span className="w-2 h-2 rounded-full bg-amber-400"></span>
+              Chamada Integral
             </span>
           </div>
           <span className="text-[10.5px] text-slate-400 font-medium ml-auto hidden sm:inline">
-            Clique nos botões para alternar P (Presente) ou F (Falta) individualmente
+            Clique nos botões para alternar Presente ou Falta individualmente
           </span>
         </div>
 
@@ -1263,8 +1257,8 @@ export const LovableDashboard: React.FC<LovableDashboardProps> = ({
                   </>
                 ) : (
                   <>
-                    <th className="py-3 px-3.5 text-center">1ª Aula • (Início) / (Final)</th>
-                    <th className="py-3 px-3.5 text-center">2ª Aula • (Início) / (Final)</th>
+                    <th className="py-3 px-3.5 text-center">1ª Aula</th>
+                    <th className="py-3 px-3.5 text-center">2ª Aula</th>
                     <th className="py-3 px-3.5 text-center">Status Geral</th>
                   </>
                 )}
@@ -1345,74 +1339,52 @@ export const LovableDashboard: React.FC<LovableDashboardProps> = ({
                         </>
                       ) : (
                         <>
-                          {/* 1ª Aula Checkpoints (Início / Final) */}
+                          {/* 1ª Aula */}
                           <td className="py-3 px-3.5 text-center">
-                            <div className="inline-flex items-center gap-1.5">
-                              <button
-                                onClick={() => {
-                                  const next = p1Start === 'present' ? 'absent' : 'present';
-                                  setAttendanceStatus(st.id, next, 'p1_start');
-                                }}
-                                title={`1ª Aula (Início): ${p1Start === 'present' ? `Presente (${record?.p1StartTimestamp || 'Sim'})` : 'Falta'}`}
-                                className={`px-2 py-0.5 rounded-lg text-[10px] font-bold border transition-all cursor-pointer ${
-                                  p1Start === 'present'
-                                    ? 'bg-emerald-50 text-emerald-700 border-emerald-200 hover:bg-emerald-100'
-                                    : 'bg-slate-100 text-slate-500 border-slate-200 hover:bg-rose-50 hover:text-rose-600'
-                                }`}
-                              >
-                                (Início): {p1Start === 'present' ? 'P' : 'F'}
-                              </button>
-
-                              <button
-                                onClick={() => {
-                                  const next = p1End === 'present' ? 'absent' : 'present';
-                                  setAttendanceStatus(st.id, next, 'p1_end');
-                                }}
-                                title={`1ª Aula (Final): ${p1End === 'present' ? `Presente (${record?.p1EndTimestamp || 'Sim'})` : 'Falta'}`}
-                                className={`px-2 py-0.5 rounded-lg text-[10px] font-bold border transition-all cursor-pointer ${
-                                  p1End === 'present'
-                                    ? 'bg-teal-50 text-teal-700 border-teal-200 hover:bg-teal-100'
-                                    : 'bg-slate-100 text-slate-500 border-slate-200 hover:bg-rose-50 hover:text-rose-600'
-                                }`}
-                              >
-                                (Final): {p1End === 'present' ? 'P' : 'F'}
-                              </button>
-                            </div>
+                            <button
+                              onClick={() => {
+                                const isPres = p1 === 'present' || p1Start === 'present' || p1End === 'present';
+                                setAttendanceStatus(st.id, isPres ? 'absent' : 'present', '1');
+                              }}
+                              title={`1ª Aula: ${(p1 === 'present' || p1Start === 'present' || p1End === 'present') ? `Presente (${record?.period1Timestamp || record?.p1StartTimestamp || 'Sim'})` : 'Falta'}`}
+                              className={`px-3 py-1 rounded-xl text-[11px] font-extrabold border transition-all cursor-pointer inline-flex items-center gap-1.5 ${
+                                (p1 === 'present' || p1Start === 'present' || p1End === 'present')
+                                  ? 'bg-emerald-50 text-emerald-700 border-emerald-200 hover:bg-emerald-100 shadow-2xs'
+                                  : 'bg-slate-100 text-slate-500 border-slate-200 hover:bg-rose-50 hover:text-rose-600'
+                              }`}
+                            >
+                              <span className={`w-1.5 h-1.5 rounded-full ${
+                                (p1 === 'present' || p1Start === 'present' || p1End === 'present') ? 'bg-emerald-500' : 'bg-slate-400'
+                              }`} />
+                              <span>{(p1 === 'present' || p1Start === 'present' || p1End === 'present') ? 'Presente' : 'Falta'}</span>
+                              {(record?.period1Timestamp || record?.p1StartTimestamp) && (p1 === 'present' || p1Start === 'present' || p1End === 'present') && (
+                                <span className="text-[10px] font-mono text-emerald-600/80">({record.period1Timestamp || record.p1StartTimestamp})</span>
+                              )}
+                            </button>
                           </td>
 
-                          {/* 2ª Aula Checkpoints (Início / Final) */}
+                          {/* 2ª Aula */}
                           <td className="py-3 px-3.5 text-center">
-                            <div className="inline-flex items-center gap-1.5">
-                              <button
-                                onClick={() => {
-                                  const next = p2Start === 'present' ? 'absent' : 'present';
-                                  setAttendanceStatus(st.id, next, 'p2_start');
-                                }}
-                                title={`2ª Aula (Início): ${p2Start === 'present' ? `Presente (${record?.p2StartTimestamp || 'Sim'})` : 'Falta'}`}
-                                className={`px-2 py-0.5 rounded-lg text-[10px] font-bold border transition-all cursor-pointer ${
-                                  p2Start === 'present'
-                                    ? 'bg-indigo-50 text-indigo-700 border-indigo-200 hover:bg-indigo-100'
-                                    : 'bg-slate-100 text-slate-500 border-slate-200 hover:bg-rose-50 hover:text-rose-600'
-                                }`}
-                              >
-                                (Início): {p2Start === 'present' ? 'P' : 'F'}
-                              </button>
-
-                              <button
-                                onClick={() => {
-                                  const next = p2End === 'present' ? 'absent' : 'present';
-                                  setAttendanceStatus(st.id, next, 'p2_end');
-                                }}
-                                title={`2ª Aula (Final): ${p2End === 'present' ? `Presente (${record?.p2EndTimestamp || 'Sim'})` : 'Falta'}`}
-                                className={`px-2 py-0.5 rounded-lg text-[10px] font-bold border transition-all cursor-pointer ${
-                                  p2End === 'present'
-                                    ? 'bg-purple-50 text-purple-700 border-purple-200 hover:bg-purple-100'
-                                    : 'bg-slate-100 text-slate-500 border-slate-200 hover:bg-rose-50 hover:text-rose-600'
-                                }`}
-                              >
-                                (Final): {p2End === 'present' ? 'P' : 'F'}
-                              </button>
-                            </div>
+                            <button
+                              onClick={() => {
+                                const isPres = p2 === 'present' || p2Start === 'present' || p2End === 'present';
+                                setAttendanceStatus(st.id, isPres ? 'absent' : 'present', '2');
+                              }}
+                              title={`2ª Aula: ${(p2 === 'present' || p2Start === 'present' || p2End === 'present') ? `Presente (${record?.period2Timestamp || record?.p2StartTimestamp || 'Sim'})` : 'Falta'}`}
+                              className={`px-3 py-1 rounded-xl text-[11px] font-extrabold border transition-all cursor-pointer inline-flex items-center gap-1.5 ${
+                                (p2 === 'present' || p2Start === 'present' || p2End === 'present')
+                                  ? 'bg-sky-50 text-sky-700 border-sky-200 hover:bg-sky-100 shadow-2xs'
+                                  : 'bg-slate-100 text-slate-500 border-slate-200 hover:bg-rose-50 hover:text-rose-600'
+                              }`}
+                            >
+                              <span className={`w-1.5 h-1.5 rounded-full ${
+                                (p2 === 'present' || p2Start === 'present' || p2End === 'present') ? 'bg-sky-500' : 'bg-slate-400'
+                              }`} />
+                              <span>{(p2 === 'present' || p2Start === 'present' || p2End === 'present') ? 'Presente' : 'Falta'}</span>
+                              {(record?.period2Timestamp || record?.p2StartTimestamp) && (p2 === 'present' || p2Start === 'present' || p2End === 'present') && (
+                                <span className="text-[10px] font-mono text-sky-600/80">({record.period2Timestamp || record.p2StartTimestamp})</span>
+                              )}
+                            </button>
                           </td>
 
                           {/* Overall Status Badge */}
@@ -1680,13 +1652,9 @@ export const LovableDashboard: React.FC<LovableDashboardProps> = ({
                   <h3 className="text-base font-black text-slate-900">Encerramento & Transição de Chamada</h3>
                   <p className="text-xs text-slate-500 font-medium">
                     Etapa Atual: <strong className="text-slate-800">
-                      {currentPeriod === 'p1_start' ? '1ª Aula (Início)' :
-                       currentPeriod === 'p1_end' ? '1ª Aula (Final)' :
-                       currentPeriod === 'p2_start' ? '2ª Aula (Início)' :
-                       currentPeriod === 'p2_end' ? '2ª Aula (Final)' :
-                       currentPeriod === 'both' ? 'Chamada Integral' :
+                      {currentPeriod === 'both' ? 'Chamada Integral' :
                        currentPeriod === 'activity_single' ? 'Chamada Integral (Atividade Prática)' :
-                       currentPeriod === '1' ? '1ª Aula' : '2ª Aula'}
+                       (currentPeriod === '2' || currentPeriod === 'p2_start' || currentPeriod === 'p2_end') ? '2ª Aula' : '1ª Aula'}
                     </strong>
                   </p>
                 </div>
@@ -1728,28 +1696,122 @@ export const LovableDashboard: React.FC<LovableDashboardProps> = ({
               {/* Sub-actions: Transição de Período */}
               <div className="pt-2 border-t border-slate-100 space-y-2">
                 <p className="text-[11px] font-semibold text-slate-500 uppercase tracking-wider">
-                  Ou avançar período / etapa da aula:
+                  Ou alternar período da aula:
                 </p>
 
-                {/* Case 1: 1ª Aula (Início) */}
-                {currentPeriod === 'p1_start' && (
+                {/* Se estiver na 1ª Aula */}
+                {(currentPeriod === '1' || currentPeriod === 'p1_start' || currentPeriod === 'p1_end') && (
                   <div className="space-y-2">
                     <button
                       type="button"
                       onClick={() => {
-                        setActivePeriod('p1_end');
+                        setActivePeriod('2');
                         setConfirmLockModalOpen(false);
-                        setActionSuccessToast('1ª Aula (Início) encerrada. Chamada da 1ª Aula (Final) aberta com sucesso!');
+                        setActionSuccessToast('1ª Aula concluída. Chamada da 2ª Aula iniciada!');
+                        playBeep('checkpoint');
+                      }}
+                      className="w-full p-3 rounded-2xl bg-sky-50 hover:bg-sky-100 text-sky-900 border border-sky-200 text-xs font-bold flex items-center justify-between transition-all group cursor-pointer"
+                    >
+                      <div className="text-left">
+                        <div className="font-black text-sky-950 flex items-center gap-1.5">
+                          <span>Avançar para a 2ª Aula</span>
+                        </div>
+                        <div className="text-[11px] text-sky-700 font-normal">
+                          Conclui a 1ª aula e abre a chamada da 2ª aula no telão e QR Code.
+                        </div>
+                      </div>
+                      <ArrowRight className="w-4 h-4 text-sky-700 group-hover:translate-x-1 transition-transform" />
+                    </button>
+
+                    <button
+                      type="button"
+                      onClick={() => {
+                        setActivePeriod('both');
+                        setConfirmLockModalOpen(false);
+                        setActionSuccessToast('Chamada alternada para Chamada Integral!');
+                        playBeep('checkpoint');
+                      }}
+                      className="w-full p-3 rounded-2xl bg-slate-50 hover:bg-slate-100 text-slate-900 border border-slate-200 text-xs font-bold flex items-center justify-between transition-all group cursor-pointer"
+                    >
+                      <div className="text-left">
+                        <div className="font-black text-slate-950 flex items-center gap-1.5">
+                          <span>Mudar para Chamada Integral</span>
+                        </div>
+                        <div className="text-[11px] text-slate-600 font-normal">
+                          Permite validação de presença para todo o período (1ª e 2ª Aulas).
+                        </div>
+                      </div>
+                      <ArrowRight className="w-4 h-4 text-slate-700 group-hover:translate-x-1 transition-transform" />
+                    </button>
+                  </div>
+                )}
+
+                {/* Se estiver na 2ª Aula */}
+                {(currentPeriod === '2' || currentPeriod === 'p2_start' || currentPeriod === 'p2_end') && (
+                  <div className="space-y-2">
+                    <button
+                      type="button"
+                      onClick={() => {
+                        setActivePeriod('both');
+                        setConfirmLockModalOpen(false);
+                        setActionSuccessToast('Chamada alternada para Chamada Integral!');
+                        playBeep('checkpoint');
+                      }}
+                      className="w-full p-3 rounded-2xl bg-slate-50 hover:bg-slate-100 text-slate-900 border border-slate-200 text-xs font-bold flex items-center justify-between transition-all group cursor-pointer"
+                    >
+                      <div className="text-left">
+                        <div className="font-black text-slate-950 flex items-center gap-1.5">
+                          <span>Mudar para Chamada Integral</span>
+                        </div>
+                        <div className="text-[11px] text-slate-600 font-normal">
+                          Valida presença para 1ª e 2ª Aulas simultaneamente.
+                        </div>
+                      </div>
+                      <ArrowRight className="w-4 h-4 text-slate-700 group-hover:translate-x-1 transition-transform" />
+                    </button>
+
+                    <button
+                      type="button"
+                      onClick={() => {
+                        setActivePeriod('1');
+                        setConfirmLockModalOpen(false);
+                        setActionSuccessToast('Retornado para a chamada da 1ª Aula.');
                         playBeep('checkpoint');
                       }}
                       className="w-full p-3 rounded-2xl bg-teal-50 hover:bg-teal-100 text-teal-900 border border-teal-200 text-xs font-bold flex items-center justify-between transition-all group cursor-pointer"
                     >
                       <div className="text-left">
                         <div className="font-black text-teal-950 flex items-center gap-1.5">
-                          <span>Encerrar Início e Abrir 1ª Aula (Final)</span>
+                          <span>Retornar para a 1ª Aula</span>
                         </div>
                         <div className="text-[11px] text-teal-700 font-normal">
-                          Para registrar a saída ou verificação final da 1ª aula.
+                          Reabre a validação específica da 1ª aula.
+                        </div>
+                      </div>
+                      <ArrowRight className="w-4 h-4 text-teal-700 group-hover:translate-x-1 transition-transform" />
+                    </button>
+                  </div>
+                )}
+
+                {/* Se estiver em Chamada Integral */}
+                {currentPeriod === 'both' && (
+                  <div className="space-y-2">
+                    <button
+                      type="button"
+                      onClick={() => {
+                        setActivePeriod('1');
+                        setConfirmLockModalOpen(false);
+                        setActionSuccessToast('Chamada alterada para 1ª Aula.');
+                        playBeep('checkpoint');
+                      }}
+                      className="w-full p-3 rounded-2xl bg-teal-50 hover:bg-teal-100 text-teal-900 border border-teal-200 text-xs font-bold flex items-center justify-between transition-all group cursor-pointer"
+                    >
+                      <div className="text-left">
+                        <div className="font-black text-teal-950 flex items-center gap-1.5">
+                          <span>Alternar para 1ª Aula</span>
+                        </div>
+                        <div className="text-[11px] text-teal-700 font-normal">
+                          Registra presença somente na 1ª aula.
                         </div>
                       </div>
                       <ArrowRight className="w-4 h-4 text-teal-700 group-hover:translate-x-1 transition-transform" />
@@ -1758,74 +1820,22 @@ export const LovableDashboard: React.FC<LovableDashboardProps> = ({
                     <button
                       type="button"
                       onClick={() => {
-                        setActivePeriod('p2_start');
+                        setActivePeriod('2');
                         setConfirmLockModalOpen(false);
-                        setActionSuccessToast('1ª Aula concluída. Chamada da 2ª Aula (Início) iniciada!');
+                        setActionSuccessToast('Chamada alterada para 2ª Aula.');
                         playBeep('checkpoint');
                       }}
                       className="w-full p-3 rounded-2xl bg-sky-50 hover:bg-sky-100 text-sky-900 border border-sky-200 text-xs font-bold flex items-center justify-between transition-all group cursor-pointer"
                     >
                       <div className="text-left">
                         <div className="font-black text-sky-950 flex items-center gap-1.5">
-                          <span>Avançar Direto para a 2ª Aula (Início)</span>
+                          <span>Alternar para 2ª Aula</span>
                         </div>
                         <div className="text-[11px] text-sky-700 font-normal">
-                          Conclui a 1ª aula e abre a chamada do 2º horário após intervalo.
+                          Registra presença somente na 2ª aula.
                         </div>
                       </div>
                       <ArrowRight className="w-4 h-4 text-sky-700 group-hover:translate-x-1 transition-transform" />
-                    </button>
-                  </div>
-                )}
-
-                {/* Case 2: 1ª Aula (Final ou Única) */}
-                {(currentPeriod === 'p1_end' || currentPeriod === '1') && (
-                  <div className="space-y-2">
-                    <button
-                      type="button"
-                      onClick={() => {
-                        setActivePeriod('p2_start');
-                        setConfirmLockModalOpen(false);
-                        setActionSuccessToast('1ª Aula finalizada. Chamada da 2ª Aula (Início) iniciada com sucesso!');
-                        playBeep('checkpoint');
-                      }}
-                      className="w-full p-3 rounded-2xl bg-sky-50 hover:bg-sky-100 text-sky-900 border border-sky-200 text-xs font-bold flex items-center justify-between transition-all group cursor-pointer"
-                    >
-                      <div className="text-left">
-                        <div className="font-black text-sky-950 flex items-center gap-1.5">
-                          <span>Iniciar Chamada da 2ª Aula (Início)</span>
-                        </div>
-                        <div className="text-[11px] text-sky-700 font-normal">
-                          Abre a verificação de presença do segundo tempo / pós-intervalo.
-                        </div>
-                      </div>
-                      <ArrowRight className="w-4 h-4 text-sky-700 group-hover:translate-x-1 transition-transform" />
-                    </button>
-                  </div>
-                )}
-
-                {/* Case 3: 2ª Aula (Início) */}
-                {currentPeriod === 'p2_start' && (
-                  <div className="space-y-2">
-                    <button
-                      type="button"
-                      onClick={() => {
-                        setActivePeriod('p2_end');
-                        setConfirmLockModalOpen(false);
-                        setActionSuccessToast('2ª Aula (Início) encerrada. Chamada da 2ª Aula (Final) aberta com sucesso!');
-                        playBeep('checkpoint');
-                      }}
-                      className="w-full p-3 rounded-2xl bg-teal-50 hover:bg-teal-100 text-teal-900 border border-teal-200 text-xs font-bold flex items-center justify-between transition-all group cursor-pointer"
-                    >
-                      <div className="text-left">
-                        <div className="font-black text-teal-950 flex items-center gap-1.5">
-                          <span>Encerrar Início e Abrir 2ª Aula (Final)</span>
-                        </div>
-                        <div className="text-[11px] text-teal-700 font-normal">
-                          Para registrar a saída ou verificação de término da 2ª aula.
-                        </div>
-                      </div>
-                      <ArrowRight className="w-4 h-4 text-teal-700 group-hover:translate-x-1 transition-transform" />
                     </button>
                   </div>
                 )}

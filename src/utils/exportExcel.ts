@@ -267,24 +267,21 @@ export async function exportModernAttendanceExcel({
 
   wsDetail.columns = [
     { key: 'data', width: 14 },
+    { key: 'horario', width: 18 },
     { key: 'tema', width: 34 },
     { key: 'tipo', width: 22 },
     { key: 'num', width: 8 },
     { key: 'aluno', width: 38 },
     { key: 'ra', width: 16 },
-    { key: 'p1_ini', width: 14 },
-    { key: 'p1_ini_h', width: 16 },
-    { key: 'p1_fim', width: 14 },
-    { key: 'p1_fim_h', width: 16 },
-    { key: 'p2_ini', width: 14 },
-    { key: 'p2_ini_h', width: 16 },
-    { key: 'p2_fim', width: 14 },
-    { key: 'p2_fim_h', width: 16 },
+    { key: 'p1_status', width: 15 },
+    { key: 'p1_hora', width: 16 },
+    { key: 'p2_status', width: 15 },
+    { key: 'p2_hora', width: 16 },
     { key: 'status', width: 18 },
     { key: 'metodo', width: 20 }
   ];
 
-  wsDetail.mergeCells('A1:P1');
+  wsDetail.mergeCells('A1:M1');
   const dTitle = wsDetail.getCell('A1');
   dTitle.value = `Detalhamento de Chamadas & Horários de Presença • ${selectedClass.name}`;
   dTitle.fill = BLUE_HEADER_FILL;
@@ -295,9 +292,8 @@ export async function exportModernAttendanceExcel({
   const dHeaderRow = wsDetail.getRow(3);
   dHeaderRow.height = 24;
   const dHeaders = [
-    'Data', 'Tema / Título da Aula', 'Tipo de Atividade', 'Nº', 'Nome do Aluno', 'RA',
-    '1ª Aula (Início)', 'Hora 1ª Início', '1ª Aula (Fim)', 'Hora 1ª Fim',
-    '2ª Aula (Início)', 'Hora 2ª Início', '2ª Aula (Fim)', 'Hora 2ª Fim',
+    'Data', 'Horário da Chamada', 'Tema / Título da Aula', 'Tipo de Atividade', 'Nº', 'Nome do Aluno', 'RA',
+    '1ª Aula', 'Hora 1ª Aula', '2ª Aula', 'Hora 2ª Aula',
     'Status Consolidado', 'Método de Check-in'
   ];
 
@@ -312,6 +308,10 @@ export async function exportModernAttendanceExcel({
 
   let dCurrentRow = 4;
   sessions.forEach(sess => {
+    const sessionTimeDisplay = sess.startTime 
+      ? (sess.endTime && sess.endTime !== sess.startTime ? `${sess.startTime} às ${sess.endTime}` : sess.startTime)
+      : '07:30 às 12:00';
+
     students.forEach((st, idx) => {
       const rec = sess.attendance?.[st.id];
       const isPresent = rec?.status === 'present' || 
@@ -324,10 +324,12 @@ export async function exportModernAttendanceExcel({
       const isLate = rec?.status === 'late' || rec?.period1Status === 'late' || rec?.period2Status === 'late';
       const isExcused = rec?.status === 'excused' || rec?.period1Status === 'excused' || rec?.period2Status === 'excused';
 
-      const p1Start = (rec?.p1StartStatus === 'present' || rec?.period1Status === 'present' || (isPresent && !rec?.p1StartStatus)) ? 'Presente' : (rec?.p1StartStatus === 'late' ? 'Atraso' : (rec?.p1StartStatus === 'excused' ? 'Atestado' : 'Falta'));
-      const p1End = (rec?.p1EndStatus === 'present' || rec?.period1Status === 'present' || (isPresent && !rec?.p1EndStatus)) ? 'Presente' : (rec?.p1EndStatus === 'late' ? 'Atraso' : (rec?.p1EndStatus === 'excused' ? 'Atestado' : 'Falta'));
-      const p2Start = (rec?.p2StartStatus === 'present' || rec?.period2Status === 'present' || (isPresent && !rec?.p2StartStatus)) ? 'Presente' : (rec?.p2StartStatus === 'late' ? 'Atraso' : (rec?.p2StartStatus === 'excused' ? 'Atestado' : 'Falta'));
-      const p2End = (rec?.p2EndStatus === 'present' || rec?.period2Status === 'present' || (isPresent && !rec?.p2EndStatus)) ? 'Presente' : (rec?.p2EndStatus === 'late' ? 'Atraso' : (rec?.p2EndStatus === 'excused' ? 'Atestado' : 'Falta'));
+      const isP1 = rec?.period1Status === 'present' || rec?.p1StartStatus === 'present' || rec?.p1EndStatus === 'present';
+      const isP2 = rec?.period2Status === 'present' || rec?.p2StartStatus === 'present' || rec?.p2EndStatus === 'present';
+      const p1Status = isP1 ? 'Presente' : (rec?.period1Status === 'late' || rec?.p1StartStatus === 'late' ? 'Atraso' : (rec?.period1Status === 'excused' ? 'Atestado' : 'Falta'));
+      const p2Status = isP2 ? 'Presente' : (rec?.period2Status === 'late' || rec?.p2StartStatus === 'late' ? 'Atraso' : (rec?.period2Status === 'excused' ? 'Atestado' : 'Falta'));
+      const p1Time = rec?.period1Timestamp || rec?.p1StartTimestamp || rec?.p1EndTimestamp || '-';
+      const p2Time = rec?.period2Timestamp || rec?.p2StartTimestamp || rec?.p2EndTimestamp || '-';
       const overall = isPresent ? 'Presente' : isLate ? 'Atraso' : isExcused ? 'Atestado' : 'Falta';
 
       const row = wsDetail.getRow(dCurrentRow);
@@ -336,27 +338,24 @@ export async function exportModernAttendanceExcel({
       const dateFormatted = sess.date ? sess.date.split('-').reverse().join('/') : '-';
       const labSuffix = sess.labLocation === 'anatomia' ? ' [Lab. Anatomia]' : sess.labLocation === 'histologia' ? ' [Lab. Histologia]' : '';
       row.getCell(1).value = dateFormatted;
-      row.getCell(2).value = sess.topic || 'Aula Regular BMF4';
-      row.getCell(3).value = (sess.activityType || sess.activityCategory || 'Teórica/Prática') + labSuffix;
-      row.getCell(4).value = idx + 1;
-      row.getCell(5).value = st.name.toUpperCase();
-      row.getCell(6).value = st.registrationNumber;
-      row.getCell(7).value = p1Start;
-      row.getCell(8).value = rec?.p1StartTimestamp || '-';
-      row.getCell(9).value = p1End;
-      row.getCell(10).value = rec?.p1EndTimestamp || '-';
-      row.getCell(11).value = p2Start;
-      row.getCell(12).value = rec?.p2StartTimestamp || '-';
-      row.getCell(13).value = p2End;
-      row.getCell(14).value = rec?.p2EndTimestamp || '-';
-      row.getCell(15).value = overall;
-      row.getCell(16).value = rec?.checkinMethod === 'qrcode' ? 'QR Code Dinâmico' : 'Manual / Docente';
+      row.getCell(2).value = sessionTimeDisplay;
+      row.getCell(3).value = sess.topic || 'Aula Regular BMF4';
+      row.getCell(4).value = (sess.activityType || sess.activityCategory || 'Teórica/Prática') + labSuffix;
+      row.getCell(5).value = idx + 1;
+      row.getCell(6).value = st.name.toUpperCase();
+      row.getCell(7).value = st.registrationNumber;
+      row.getCell(8).value = p1Status;
+      row.getCell(9).value = p1Time;
+      row.getCell(10).value = p2Status;
+      row.getCell(11).value = p2Time;
+      row.getCell(12).value = overall;
+      row.getCell(13).value = rec?.checkinMethod === 'qrcode' ? 'QR Code Dinâmico' : 'Manual / Docente';
 
-      for (let c = 1; c <= 16; c++) {
+      for (let c = 1; c <= 13; c++) {
         const cell = row.getCell(c);
         cell.font = { name: 'Calibri', size: 10 };
         cell.border = THIN_BORDER;
-        cell.alignment = { vertical: 'middle', horizontal: (c === 2 || c === 5) ? 'left' : 'center' };
+        cell.alignment = { vertical: 'middle', horizontal: (c === 3 || c === 6) ? 'left' : 'center' };
       }
       dCurrentRow++;
     });
@@ -365,7 +364,7 @@ export async function exportModernAttendanceExcel({
   if (dCurrentRow > 4) {
     wsDetail.autoFilter = {
       from: { row: 3, column: 1 },
-      to: { row: dCurrentRow - 1, column: 16 }
+      to: { row: dCurrentRow - 1, column: 13 }
     };
   }
 

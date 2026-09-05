@@ -144,9 +144,9 @@ export const ProfessorsManagement: React.FC = () => {
   };
 
   const handleAttemptDelete = (prof: Professor) => {
-    if (!isCurrentAdmin) {
+    if (professors.length <= 1) {
       playBeep('alert');
-      showToast('Acesso Negado: Apenas o Professor Admin (Responsável pelo Sistema) tem permissão para excluir docentes.', 'error');
+      showToast('Não é permitido excluir o único docente cadastrado no sistema.', 'error');
       return;
     }
     setDeletingProf(prof);

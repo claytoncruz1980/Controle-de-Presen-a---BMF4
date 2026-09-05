@@ -804,35 +804,37 @@ async function startServer() {
 
       const existingRec = targetSession.attendance?.[student.id];
 
-      // Verificar se já está presente especificamente na etapa atual
+      // Intelligent period presence check: 1ª Aula, 2ª Aula, Integral
       let isAlreadyPresent = false;
       if (existingRec) {
-        if (currentPeriod === 'p1_start') {
-          if (existingRec.p1StartStatus === 'present' || existingRec.p1StartStatus === 'late') isAlreadyPresent = true;
-        } else if (currentPeriod === 'p1_end') {
-          if (existingRec.p1EndStatus === 'present' || existingRec.p1EndStatus === 'late') isAlreadyPresent = true;
-        } else if (currentPeriod === 'p2_start') {
-          if (existingRec.p2StartStatus === 'present' || existingRec.p2StartStatus === 'late') isAlreadyPresent = true;
-        } else if (currentPeriod === 'p2_end') {
-          if (existingRec.p2EndStatus === 'present' || existingRec.p2EndStatus === 'late') isAlreadyPresent = true;
-        } else if (currentPeriod === '1') {
-          if (existingRec.period1Status === 'present' && existingRec.p1StartStatus === 'present' && existingRec.p1EndStatus === 'present') isAlreadyPresent = true;
-        } else if (currentPeriod === '2') {
-          if (existingRec.period2Status === 'present' && existingRec.p2StartStatus === 'present' && existingRec.p2EndStatus === 'present') isAlreadyPresent = true;
-        } else if (currentPeriod === 'activity_single') {
-          if (existingRec.status === 'present' || existingRec.status === 'late') isAlreadyPresent = true;
+        if (currentPeriod === '1' || currentPeriod === 'p1_start' || currentPeriod === 'p1_end') {
+          if (existingRec.period1Status === 'present' || existingRec.p1StartStatus === 'present' || existingRec.p1EndStatus === 'present') {
+            isAlreadyPresent = true;
+          }
+        } else if (currentPeriod === '2' || currentPeriod === 'p2_start' || currentPeriod === 'p2_end') {
+          if (existingRec.period2Status === 'present' || existingRec.p2StartStatus === 'present' || existingRec.p2EndStatus === 'present') {
+            isAlreadyPresent = true;
+          }
         } else if (currentPeriod === 'both') {
-          if (existingRec.status === 'present' && existingRec.period1Status === 'present' && existingRec.period2Status === 'present' && existingRec.p1StartStatus === 'present' && existingRec.p1EndStatus === 'present' && existingRec.p2StartStatus === 'present' && existingRec.p2EndStatus === 'present') isAlreadyPresent = true;
+          const hasP1 = existingRec.period1Status === 'present' || existingRec.p1StartStatus === 'present';
+          const hasP2 = existingRec.period2Status === 'present' || existingRec.p2StartStatus === 'present';
+          if (hasP1 && hasP2) {
+            isAlreadyPresent = true;
+          }
+        } else if (currentPeriod === 'activity_single') {
+          if (existingRec.status === 'present' || existingRec.status === 'late') {
+            isAlreadyPresent = true;
+          }
         }
       }
 
       if (isAlreadyPresent) {
-        const stageName = currentPeriod === 'p1_start' ? '1ª Aula (Início)'
-          : currentPeriod === 'p1_end' ? '1ª Aula (Final)'
-          : currentPeriod === 'p2_start' ? '2ª Aula (Início)'
-          : currentPeriod === 'p2_end' ? '2ª Aula (Final)'
-          : currentPeriod === '1' ? '1ª Aula'
-          : currentPeriod === '2' ? '2ª Aula'
+        const stageName = (currentPeriod === '1' || currentPeriod === 'p1_start' || currentPeriod === 'p1_end')
+          ? '1ª Aula'
+          : (currentPeriod === '2' || currentPeriod === 'p2_start' || currentPeriod === 'p2_end')
+          ? '2ª Aula'
+          : currentPeriod === 'both'
+          ? 'Chamada Integral (1ª e 2ª Aula)'
           : 'nesta chamada';
         return res.json({
           success: false,
