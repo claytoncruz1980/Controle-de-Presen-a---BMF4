@@ -40,8 +40,15 @@ import {
   ToggleRight,
   Info
 } from 'lucide-react';
-import { useLab } from '../context/LabContext';
-import { ClassPeriod } from '../types';
+import { useLab, isDateToday } from '../context/LabContext';
+import { ClassPeriod, Student } from '../types';
+import { 
+  getStudentAttendanceRecord, 
+  isRecordPresent, 
+  isRecordLate, 
+  normalizeStudentRa, 
+  matchStudentRa 
+} from '../utils/attendanceHelpers';
 import { QRCodeDisplay } from './QRCodeDisplay';
 import { StudentAvatar } from './StudentAvatar';
 import { AppLogo } from './AppLogo';
@@ -51,6 +58,7 @@ interface LabProjectionScreenProps {
   onExitAndClose?: () => void;
   onBackToDashboard?: () => void;
   isStandalonePortal?: boolean;
+  initialPeriod?: ClassPeriod;
 }
 
 // Helper to extract parameters from window.location.search or window.location.hash
@@ -72,6 +80,7 @@ export const LabProjectionScreen: React.FC<LabProjectionScreenProps> = ({
   onExitAndClose,
   onBackToDashboard,
   isStandalonePortal = false,
+  initialPeriod,
 }) => {
   const { 
     activeSession,
@@ -88,6 +97,7 @@ export const LabProjectionScreen: React.FC<LabProjectionScreenProps> = ({
     toggleLiveSession,
     startNewSession,
     lockCurrentSession,
+    clearActiveSessionCache,
     reopenCurrentSession,
     lockPeriod1,
     lockPeriod2,
@@ -124,13 +134,25 @@ export const LabProjectionScreen: React.FC<LabProjectionScreenProps> = ({
   const [selectedNextStageOverride, setSelectedNextStageOverride] = useState<ClassPeriod | 'next_class' | null>(null);
   const [transitionToast, setTransitionToast] = useState<{ title: string; message: string; badge?: string } | null>(null);
 
-  const prevPresentIdsRef = React.useRef<Set<string>>(new Set());
-  const isInitialMountRef = React.useRef(true);
-  const hasAutoStartedRef = React.useRef(false);
-
   // Read URL params on mount
   const urlTurma = getProjectionParam('turma') || getProjectionParam('turmaid') || getProjectionParam('classId');
   const urlPeriod = getProjectionParam('period') || getProjectionParam('etapa');
+
+  // Local period state allowing instant switching on the projection screen
+  const [selectedPeriod, setSelectedPeriod] = useState<ClassPeriod | null>(() => {
+    if (initialPeriod) return initialPeriod;
+    if (urlPeriod) return urlPeriod as ClassPeriod;
+    return null;
+  });
+
+  // Responsive screen width state for perfectly proportioned QR code across mobile and desktop/TV screens
+  const [screenWidth, setScreenWidth] = useState(() => 
+    typeof window !== 'undefined' ? window.innerWidth : 1024
+  );
+
+  const prevPresentIdsRef = React.useRef<Set<string>>(new Set());
+  const isInitialMountRef = React.useRef(true);
+  const hasAutoStartedRef = React.useRef(false);
 
   // Sync class from URL if present
   useEffect(() => {
@@ -151,19 +173,47 @@ export const LabProjectionScreen: React.FC<LabProjectionScreenProps> = ({
     ? (classes.find(c => c.id === urlTurma || c.name.toLowerCase() === urlTurma.toLowerCase())?.id || urlTurma)
     : (activeSession?.classGroupId || selectedClassId || classes[0]?.id || 'class-bmf4-default');
 
+  const urlSessionId = getProjectionParam('session') || getProjectionParam('sessionid') || '';
+
   // Find effective session for this specific class
   const effectiveSession = useMemo(() => {
-    if (activeSession && activeSession.classGroupId === effectiveClassId) {
-      return activeSession;
+    if (urlSessionId) {
+      const explicit = sessions.find(s => s.id === urlSessionId);
+      if (explicit && explicit.isLive && !explicit.isLocked) return explicit;
     }
     const classSessions = sessions.filter(s => s.classGroupId === effectiveClassId);
-    const live = classSessions.find(s => s.isLive && !s.isLocked);
-    if (live) return live;
-    const todayStr = new Date().toISOString().split('T')[0];
-    const today = classSessions.find(s => s.date === todayStr);
+
+    // 1. Live & unlocked session for today
+    const todayLive = classSessions.find(s => isDateToday(s.date) && s.isLive && !s.isLocked);
+    if (todayLive) return todayLive;
+
+    // 2. Active session if matching and live
+    if (activeSession && activeSession.classGroupId === effectiveClassId && activeSession.isLive && !activeSession.isLocked) {
+      return activeSession;
+    }
+
+    // 3. Any live & unlocked session for this class
+    const anyLive = classSessions.find(s => s.isLive && !s.isLocked);
+    if (anyLive) return anyLive;
+
+    // 4. Any session created today for this class (even if locked)
+    const today = classSessions.find(s => isDateToday(s.date));
     if (today) return today;
-    return classSessions[0] || activeSession || null;
-  }, [activeSession, sessions, effectiveClassId]);
+
+    // 5. Explicit urlSessionId even if locked
+    if (urlSessionId) {
+      const explicit = sessions.find(s => s.id === urlSessionId);
+      if (explicit) return explicit;
+    }
+
+    // 6. Most recent session for this class
+    if (classSessions.length > 0) {
+      return classSessions[0];
+    }
+
+    // Never return old locked sessions from previous days as the effective live session
+    return null;
+  }, [urlSessionId, activeSession, sessions, effectiveClassId]);
 
   const selectedClass = useMemo(() => {
     const found = classes.find(c => 
@@ -199,13 +249,17 @@ export const LabProjectionScreen: React.FC<LabProjectionScreenProps> = ({
   // Projection is live strictly if the session is live and not locked
   const isLive = Boolean(effectiveSession && effectiveSession.isLive && !effectiveSession.isLocked);
 
-  // Auto-initialize active live session on standalone projection mount ONLY if absolutely no session exists for this class
+  // Auto-initialize active live session on standalone projection mount if no session exists for today
   useEffect(() => {
     if (hasAutoStartedRef.current) return;
     hasAutoStartedRef.current = true;
 
-    const hasAnySessionForClass = sessions.some(s => s.classGroupId === effectiveClassId);
-    if (!effectiveSession && !hasAnySessionForClass && effectiveClassId && isStandalonePortal) {
+    const hasTodaySession = sessions.some(s => 
+      s.classGroupId === effectiveClassId && isDateToday(s.date)
+    );
+    const hasLiveSession = sessions.some(s => s.classGroupId === effectiveClassId && s.isLive && !s.isLocked);
+
+    if (!hasTodaySession && !hasLiveSession && effectiveClassId && isStandalonePortal) {
       startNewSession({
         classGroupId: effectiveClassId,
         topic: 'Aula BMF4 - Morfofuncional',
@@ -214,7 +268,7 @@ export const LabProjectionScreen: React.FC<LabProjectionScreenProps> = ({
         activePeriod: (urlPeriod as ClassPeriod) || 'p1_start'
       });
     }
-  }, [effectiveSession, effectiveClassId, isStandalonePortal, sessions, startNewSession, urlPeriod]);
+  }, [effectiveClassId, isStandalonePortal, sessions, startNewSession, urlPeriod]);
 
   const rotationInterval = appSettings.tokenRotationSeconds || 10;
 
@@ -234,27 +288,55 @@ export const LabProjectionScreen: React.FC<LabProjectionScreenProps> = ({
   const presentStudents = useMemo(() => {
     if (!effectiveSession?.attendance) return [];
 
-    const presentRecords = Object.entries(effectiveSession.attendance).filter(([_, rec]: [string, any]) => {
-      return rec && (rec.status === 'present' || rec.status === 'late');
-    });
+    const seenStudentIds = new Set<string>();
+    const seenRas = new Set<string>();
+    const result: Student[] = [];
 
-    return presentRecords.map(([stId, rec]: [string, any]) => {
-      const foundStudent = students.find(s => s.id === stId || (rec.studentRa && s.registrationNumber === rec.studentRa));
-      if (foundStudent) return foundStudent;
-      return {
-        id: stId,
-        name: rec.studentName || `Aluno ${rec.studentRa || stId}`,
-        registrationNumber: rec.studentRa || stId,
+    const entries = Object.entries(effectiveSession.attendance);
+    for (const [key, rec] of entries) {
+      if (!rec || (!isRecordPresent(rec) && !isRecordLate(rec) && (rec as any).status !== 'present' && (rec as any).status !== 'late')) {
+        continue;
+      }
+
+      const recRa = normalizeStudentRa((rec as any).studentRa || (rec as any).registrationNumber || (key.length >= 6 && /^\d+$/.test(key) ? key : ''));
+      const studentId = (rec as any).studentId || (key.startsWith('student-') ? key : '');
+
+      // Find student in students array
+      const foundStudent = students.find(s => 
+        (studentId && s.id === studentId) ||
+        (recRa && matchStudentRa(s.registrationNumber, recRa)) ||
+        s.id === key
+      );
+
+      const canonicalId = foundStudent?.id || studentId || key;
+      const canonicalRa = foundStudent?.registrationNumber || (rec as any).studentRa || recRa;
+
+      if (canonicalId && seenStudentIds.has(canonicalId)) continue;
+      if (canonicalRa && seenRas.has(normalizeStudentRa(canonicalRa))) continue;
+
+      if (canonicalId) seenStudentIds.add(canonicalId);
+      if (canonicalRa) seenRas.add(normalizeStudentRa(canonicalRa));
+
+      const studentObj: Student = foundStudent || {
+        id: canonicalId,
+        name: (rec as any).studentName || (recRa ? `Aluno RA ${recRa}` : 'Aluno Confirmado'),
+        registrationNumber: canonicalRa || 'RA Registrado',
         classGroupId: effectiveClassId,
         email: '',
         attendanceStats: { totalClasses: 0, attended: 0, percentage: 100, consecutiveAbsences: 0, riskLevel: 'low' as const }
       };
-    }).sort((a, b) => {
-      const timeA = (effectiveSession.attendance as any)?.[a.id]?.timestamp || (effectiveSession.attendance as any)?.[a.id]?.p1StartTimestamp || '00:00';
-      const timeB = (effectiveSession.attendance as any)?.[b.id]?.timestamp || (effectiveSession.attendance as any)?.[b.id]?.p1StartTimestamp || '00:00';
+
+      result.push(studentObj);
+    }
+
+    return result.sort((a, b) => {
+      const recA = getStudentAttendanceRecord(effectiveSession.attendance, a);
+      const recB = getStudentAttendanceRecord(effectiveSession.attendance, b);
+      const timeA = recA?.timestamp || recA?.period1Timestamp || recA?.p1StartTimestamp || '00:00';
+      const timeB = recB?.timestamp || recB?.period1Timestamp || recB?.p1StartTimestamp || '00:00';
       return timeB.localeCompare(timeA);
     });
-  }, [effectiveSession, students, effectiveClassId]);
+  }, [effectiveSession?.attendance, students, effectiveClassId]);
 
   const totalStudents = Math.max(classStudents.length, presentStudents.length);
   const presentCount = presentStudents.length;
@@ -313,12 +395,26 @@ export const LabProjectionScreen: React.FC<LabProjectionScreenProps> = ({
     return () => document.removeEventListener('fullscreenchange', handleFullscreenChange);
   }, []);
 
-  const currentPeriod: ClassPeriod = (effectiveSession?.activePeriod || activeSession?.activePeriod || 'p1_start') as ClassPeriod;
+  // Whenever initialPeriod prop changes, update selectedPeriod immediately
+  useEffect(() => {
+    if (initialPeriod) {
+      setSelectedPeriod(initialPeriod);
+    }
+  }, [initialPeriod]);
 
-  // Responsive screen width state for perfectly proportioned QR code across mobile and desktop/TV screens
-  const [screenWidth, setScreenWidth] = useState(() => 
-    typeof window !== 'undefined' ? window.innerWidth : 1024
-  );
+  // Synchronize effective session when selectedPeriod changes
+  useEffect(() => {
+    if (selectedPeriod && effectiveSession && effectiveSession.activePeriod !== selectedPeriod) {
+      setActivePeriod(selectedPeriod);
+    }
+  }, [selectedPeriod, effectiveSession?.id]);
+
+  const currentPeriod: ClassPeriod = (
+    selectedPeriod ||
+    effectiveSession?.activePeriod || 
+    activeSession?.activePeriod || 
+    '1'
+  ) as ClassPeriod;
 
   useEffect(() => {
     const handleResize = () => setScreenWidth(window.innerWidth);
@@ -338,7 +434,7 @@ export const LabProjectionScreen: React.FC<LabProjectionScreenProps> = ({
     effectiveClassId, 
     'checkin',
     currentPeriod,
-    effectiveSession?.id
+    (effectiveSession && effectiveSession.isLive && !effectiveSession.isLocked) ? effectiveSession.id : undefined
   );
   // Universal link for students (adapts dynamically to whichever period is currently active)
   const dynamicStudentUniversalUrl = getPublicStudentCheckinUrl(
@@ -346,57 +442,25 @@ export const LabProjectionScreen: React.FC<LabProjectionScreenProps> = ({
     effectiveClassId,
     'checkin',
     undefined,
-    effectiveSession?.id
+    (effectiveSession && effectiveSession.isLive && !effectiveSession.isLocked) ? effectiveSession.id : undefined
   );
-  const tvScreenUrl = getPublicTelaoUrl(effectiveClassId);
+  const tvScreenUrl = getPublicTelaoUrl(effectiveClassId, currentPeriod, effectiveSession?.id);
   const tvScreenAlternativeUrl = tvScreenUrl;
 
   // Stage names map
   const stageLabels: Record<string, string> = {
-    'p1_start': '1ª Aula',
-    'p1_end': '1ª Aula',
-    'p2_start': '2ª Aula',
-    'p2_end': '2ª Aula',
     '1': '1ª Aula',
     '2': '2ª Aula',
+    'p1_start': '1ª Aula (Início)',
+    'p1_end': '1ª Aula (Final)',
+    'p2_start': '2ª Aula (Início)',
+    'p2_end': '2ª Aula (Final)',
     'both': 'Chamada Integral',
-    'activity_single': 'Chamada Integral (Atividade Prática)'
+    'activity_single': 'Chamada Integral'
   };
 
   // Rich stage configurations for high-contrast, crystal-clear projection
   const stageConfig: Record<string, { label: string; shortLabel: string; badgeColor: string; bgSoft: string; border: string; desc: string }> = {
-    'p1_start': {
-      label: '1ª Aula',
-      shortLabel: '1ª Aula',
-      badgeColor: 'bg-emerald-600 text-white',
-      bgSoft: 'bg-emerald-500/15 text-emerald-300 border-emerald-500/30',
-      border: 'border-emerald-500',
-      desc: 'Registro de presença para a primeira aula',
-    },
-    'p1_end': {
-      label: '1ª Aula',
-      shortLabel: '1ª Aula',
-      badgeColor: 'bg-emerald-600 text-white',
-      bgSoft: 'bg-emerald-500/15 text-emerald-300 border-emerald-500/30',
-      border: 'border-emerald-500',
-      desc: 'Registro de presença para a primeira aula',
-    },
-    'p2_start': {
-      label: '2ª Aula',
-      shortLabel: '2ª Aula',
-      badgeColor: 'bg-sky-600 text-white',
-      bgSoft: 'bg-sky-500/15 text-sky-300 border-sky-500/30',
-      border: 'border-sky-500',
-      desc: 'Registro de presença para a segunda aula',
-    },
-    'p2_end': {
-      label: '2ª Aula',
-      shortLabel: '2ª Aula',
-      badgeColor: 'bg-sky-600 text-white',
-      bgSoft: 'bg-sky-500/15 text-sky-300 border-sky-500/30',
-      border: 'border-sky-500',
-      desc: 'Registro de presença para a segunda aula',
-    },
     '1': {
       label: '1ª Aula',
       shortLabel: '1ª Aula',
@@ -413,21 +477,53 @@ export const LabProjectionScreen: React.FC<LabProjectionScreenProps> = ({
       border: 'border-sky-500',
       desc: 'Registro de presença para a segunda aula',
     },
+    'p1_start': {
+      label: '1ª Aula (Início)',
+      shortLabel: '1ª Aula (Início)',
+      badgeColor: 'bg-emerald-600 text-white',
+      bgSoft: 'bg-emerald-500/15 text-emerald-300 border-emerald-500/30',
+      border: 'border-emerald-500',
+      desc: 'Registro de presença no início da 1ª aula',
+    },
+    'p1_end': {
+      label: '1ª Aula (Final)',
+      shortLabel: '1ª Aula (Final)',
+      badgeColor: 'bg-emerald-600 text-white',
+      bgSoft: 'bg-emerald-500/15 text-emerald-300 border-emerald-500/30',
+      border: 'border-emerald-500',
+      desc: 'Confirmação de presença no final da 1ª aula',
+    },
+    'p2_start': {
+      label: '2ª Aula (Início)',
+      shortLabel: '2ª Aula (Início)',
+      badgeColor: 'bg-sky-600 text-white',
+      bgSoft: 'bg-sky-500/15 text-sky-300 border-sky-500/30',
+      border: 'border-sky-500',
+      desc: 'Registro de presença no início da 2ª aula',
+    },
+    'p2_end': {
+      label: '2ª Aula (Final)',
+      shortLabel: '2ª Aula (Final)',
+      badgeColor: 'bg-sky-600 text-white',
+      bgSoft: 'bg-sky-500/15 text-sky-300 border-sky-500/30',
+      border: 'border-sky-500',
+      desc: 'Confirmação de presença no final da 2ª aula',
+    },
     'both': {
-      label: 'Chamada Integral (1ª e 2ª Aulas)',
+      label: 'Chamada Integral',
       shortLabel: 'Chamada Integral',
       badgeColor: 'bg-amber-500 text-slate-950 font-bold',
       bgSoft: 'bg-amber-500/15 text-amber-300 border-amber-500/30',
       border: 'border-amber-500',
-      desc: 'Presença integral para ambas as aulas',
+      desc: 'Presença integral para ambas as aulas (1ª e 2ª)',
     },
     'activity_single': {
-      label: 'Chamada Integral (Atividade Prática)',
+      label: 'Chamada Integral',
       shortLabel: 'Chamada Integral',
       badgeColor: 'bg-teal-600 text-white',
       bgSoft: 'bg-teal-500/15 text-teal-300 border-teal-500/30',
       border: 'border-teal-500',
-      desc: 'Chamada de atividade prática individual/grupo',
+      desc: 'Chamada integral de atividade prática em laboratório',
     }
   };
 
@@ -494,6 +590,9 @@ export const LabProjectionScreen: React.FC<LabProjectionScreenProps> = ({
     const targetClassId = targetClassOverride || nextStage.classId;
     const isNextClass = (nextStage.type === 'class' && targetClassId !== effectiveClassId) || (targetClassOverride && targetClassOverride !== effectiveClassId);
     const isNewSession = nextStage.type === 'new_session';
+
+    setSelectedPeriod(null);
+    setSelectedNextStageOverride(null);
 
     if (isNextClass) {
       lockCurrentSession(effectiveSession?.id, effectiveClassId);
@@ -604,6 +703,9 @@ export const LabProjectionScreen: React.FC<LabProjectionScreenProps> = ({
 
   const handleConfirmLockSession = () => {
     lockCurrentSession(effectiveSession?.id, effectiveClassId);
+    clearActiveSessionCache();
+    setSelectedPeriod(null);
+    setSelectedNextStageOverride(null);
     setIsConfirmLockOpen(false);
     playBeep('alert');
   };
@@ -612,6 +714,9 @@ export const LabProjectionScreen: React.FC<LabProjectionScreenProps> = ({
     if (document.fullscreenElement) {
       document.exitFullscreen().catch(() => {});
     }
+    clearActiveSessionCache();
+    setSelectedPeriod(null);
+    setSelectedNextStageOverride(null);
     playBeep('click');
     logoutProfessor();
     if (onExitAndClose) {
@@ -975,6 +1080,7 @@ export const LabProjectionScreen: React.FC<LabProjectionScreenProps> = ({
                   type="button"
                   id="btn-telao-period-1"
                   onClick={() => {
+                    setSelectedPeriod('1');
                     setActivePeriod('1');
                     playBeep('click');
                   }}
@@ -993,6 +1099,7 @@ export const LabProjectionScreen: React.FC<LabProjectionScreenProps> = ({
                   type="button"
                   id="btn-telao-period-2"
                   onClick={() => {
+                    setSelectedPeriod('2');
                     setActivePeriod('2');
                     playBeep('click');
                   }}
@@ -1011,6 +1118,7 @@ export const LabProjectionScreen: React.FC<LabProjectionScreenProps> = ({
                   type="button"
                   id="btn-telao-period-both"
                   onClick={() => {
+                    setSelectedPeriod('both');
                     setActivePeriod('both');
                     playBeep('click');
                   }}
@@ -1187,10 +1295,16 @@ export const LabProjectionScreen: React.FC<LabProjectionScreenProps> = ({
               <button
                 id="btn-telao-reopen-center"
                 onClick={() => {
-                  if (isLocked) {
-                    reopenCurrentSession(effectiveSession?.id, effectiveClassId);
+                  if (effectiveSession) {
+                    reopenCurrentSession(effectiveSession.id, effectiveClassId);
                   } else {
-                    toggleLiveSession();
+                    startNewSession({
+                      classGroupId: effectiveClassId,
+                      topic: 'Aula BMF4 - Morfofuncional',
+                      activityCategory: 'pratica',
+                      activityType: 'aula_pratica',
+                      activePeriod: 'p1_start'
+                    });
                   }
                   playBeep('session_start');
                 }}

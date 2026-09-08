@@ -319,7 +319,17 @@ function recalculateStudentStats(students: any[], sessions: any[]): any[] {
     const totalClasses = stSessions.length;
 
     stSessions.forEach(sess => {
-      const rec = sess.attendance?.[st.id];
+      const cleanRa = (st.registrationNumber || '').replace(/\D/g, '');
+      const rec = sess.attendance?.[st.id] ||
+        (st.registrationNumber && sess.attendance?.[st.registrationNumber]) ||
+        (cleanRa && sess.attendance?.[cleanRa]) ||
+        Object.values(sess.attendance || {}).find((r: any) => {
+          if (!r) return false;
+          if (r.studentId === st.id) return true;
+          const rRa = (r.studentRa || r.registrationNumber || '')?.toString().replace(/\D/g, '');
+          return cleanRa && rRa && (cleanRa === rRa || cleanRa.endsWith(rRa) || rRa.endsWith(cleanRa));
+        });
+
       if (rec) {
         const isPresent = rec.status === 'present' || 
           rec.period1Status === 'present' || 
@@ -469,7 +479,7 @@ async function startServer() {
     const payload = JSON.stringify({
       type: customType,
       state: dbState,
-      senderClientId: senderClientId || (dbState as any).senderClientId,
+      senderClientId: senderClientId || `server-${Date.now()}`,
       timestamp: Date.now(),
     });
 
@@ -736,20 +746,60 @@ async function startServer() {
           });
         }
 
-        const foundSession = (dbState.sessions || []).find((s: any) => s.id === sessionId);
+        let foundSession = (dbState.sessions || []).find((s: any) => s.id === sessionId);
+        
+        // If not found by exact ID, find any active live session for this class or student
         if (!foundSession) {
-          return res.status(404).json({ 
-            success: false, 
-            message: 'A aula/chamada informada não foi localizada no sistema.' 
-          });
+          foundSession = (dbState.sessions || []).find((s: any) => 
+            s.isLive && !s.isLocked && (s.classGroupId === classGroupId || s.classGroupId === student.classGroupId || s.classGroupId === dbState.selectedClassId)
+          );
+        }
+
+        // If still not found, check for any live session anywhere
+        if (!foundSession) {
+          foundSession = (dbState.sessions || []).find((s: any) => s.isLive && !s.isLocked);
+        }
+
+        // If still not found, dynamically initialize this new session so check-in is never rejected with 404
+        if (!foundSession) {
+          const targetClassId = classGroupId || student.classGroupId || dbState.selectedClassId || 'class-bmf4-turmab';
+          const targetClassObj = (dbState.classes || []).find((c: any) => c.id === targetClassId);
+          const newSessionObj = {
+            id: sessionId,
+            classGroupId: targetClassId,
+            discipline: 'BMF4',
+            date: new Date().toISOString().split('T')[0],
+            topic: 'Aula BMF4 - Morfofuncional',
+            activityCategory: 'pratica',
+            activityType: 'aula_pratica',
+            activePeriod: period || '1',
+            isLive: true,
+            isLocked: false,
+            isPaused: false,
+            startTime: '07:30',
+            endTime: '12:00',
+            professorName: (dbState.professors?.find((p: any) => p.id === dbState.activeProfessorId)?.name || targetClassObj?.professorName || 'Docente BMF4'),
+            attendance: {},
+          };
+          dbState.sessions = [newSessionObj, ...(dbState.sessions || [])];
+          foundSession = newSessionObj;
         }
 
         if (foundSession.isLocked || !foundSession.isLive) {
-          return res.status(403).json({ 
-            success: false, 
-            sessionLocked: true, 
-            message: 'A chamada desta aula já foi encerrada e bloqueada pelo docente.' 
-          });
+          // Check if there is a newer active session for this class
+          const newerActive = (dbState.sessions || []).find((s: any) => 
+            (s.classGroupId === foundSession.classGroupId || s.classGroupId === student.classGroupId) &&
+            s.isLive && !s.isLocked
+          );
+          if (newerActive) {
+            foundSession = newerActive;
+          } else {
+            return res.status(403).json({ 
+              success: false, 
+              sessionLocked: true, 
+              message: 'A chamada desta aula já foi encerrada e bloqueada pelo docente.' 
+            });
+          }
         }
 
         targetSession = foundSession;
@@ -908,8 +958,11 @@ async function startServer() {
         newP2Time = timeStr;
       }
 
+      const cleanStudentRa = (student.registrationNumber || '').replace(/\D/g, '');
       const updatedRecord = {
         studentId: student.id,
+        studentName: student.name,
+        studentRa: student.registrationNumber,
         status: 'present',
         period1Status: newPeriod1,
         period2Status: newPeriod2,
@@ -932,12 +985,19 @@ async function startServer() {
 
       const updatedSessions = dbState.sessions.map((s: any) => {
         if (s.id === targetSession.id) {
+          const newAtt = {
+            ...s.attendance,
+            [student.id]: updatedRecord,
+          };
+          if (student.registrationNumber) {
+            newAtt[student.registrationNumber] = updatedRecord;
+          }
+          if (cleanStudentRa && cleanStudentRa !== student.registrationNumber) {
+            newAtt[cleanStudentRa] = updatedRecord;
+          }
           return {
             ...s,
-            attendance: {
-              ...s.attendance,
-              [student.id]: updatedRecord,
-            }
+            attendance: newAtt,
           };
         }
         return s;
@@ -947,6 +1007,26 @@ async function startServer() {
       dbState.students = recalculateStudentStats(dbState.students, updatedSessions);
       dbState.lastUpdated = Date.now();
       saveDatabase(dbState);
+
+      // 1. Send dedicated CHECKIN_CONFIRMED with zero-latency payload
+      const checkinConfirmMsg = JSON.stringify({
+        type: "CHECKIN_CONFIRMED",
+        studentId: student.id,
+        studentName: student.name,
+        studentRa: student.registrationNumber,
+        student,
+        sessionId: targetSession.id,
+        record: updatedRecord,
+        senderClientId: `server-checkin-${Date.now()}`,
+        timestamp: Date.now(),
+      });
+      wss.clients.forEach((c) => {
+        if (c.readyState === WebSocket.OPEN) {
+          c.send(checkinConfirmMsg);
+        }
+      });
+
+      // 2. Broadcast general updated state
       broadcastState(undefined, "STATE_UPDATED", req.body?.senderClientId);
 
       return res.json({

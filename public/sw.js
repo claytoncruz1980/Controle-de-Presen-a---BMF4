@@ -1,5 +1,5 @@
 // Service Worker for Controle de Presença BMF4 (Medicina)
-const CACHE_NAME = 'bmf4-presenca-v3-pc-desktop-update';
+const CACHE_NAME = 'bmf4-presenca-v4-clean-react';
 const STATIC_ASSETS = [
   '/',
   '/index.html',
@@ -55,11 +55,17 @@ self.addEventListener('fetch', (event) => {
   const request = event.request;
   const url = new URL(request.url);
 
-  // Do not intercept or cache API, WebSocket, Firestore or non-GET requests
+  // Do not intercept or cache API, WebSocket, Firestore, Vite dev scripts, or node_modules
   if (
     request.method !== 'GET' ||
     url.pathname.startsWith('/api/') ||
     url.pathname.startsWith('/ws') ||
+    url.pathname.startsWith('/@') ||
+    url.pathname.startsWith('/src/') ||
+    url.pathname.includes('/node_modules/') ||
+    url.search.includes('v=') ||
+    url.search.includes('import') ||
+    url.search.includes('t=') ||
     url.hostname.includes('firestore') ||
     url.hostname.includes('firebase') ||
     url.protocol.startsWith('ws')
@@ -89,12 +95,13 @@ self.addEventListener('fetch', (event) => {
         if (request.mode === 'navigate') {
           const fallback = await caches.match('/index.html') || await caches.match('/');
           if (fallback) return fallback;
+          return new Response('Modo Offline - Controle de Presença BMF4', {
+            status: 503,
+            statusText: 'Offline',
+            headers: new Headers({ 'Content-Type': 'text/plain; charset=utf-8' })
+          });
         }
-        return new Response('Modo Offline - Controle de Presença BMF4', {
-          status: 503,
-          statusText: 'Offline',
-          headers: new Headers({ 'Content-Type': 'text/plain; charset=utf-8' })
-        });
+        return new Response('', { status: 408, statusText: 'Request timed out or offline' });
       })
   );
 });

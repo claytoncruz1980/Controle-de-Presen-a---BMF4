@@ -15,7 +15,7 @@ import {
   X,
   Sparkles
 } from 'lucide-react';
-import { useLab } from '../context/LabContext';
+import { useLab, isDateToday } from '../context/LabContext';
 import { Student, ClassPeriod } from '../types';
 import { QRCodeDisplay } from './QRCodeDisplay';
 import { AppLogo } from './AppLogo';
@@ -66,20 +66,29 @@ export const SecureStudentPortal: React.FC<SecureStudentPortalProps> = ({
     dynamicSecondsLeft,
     appSettings,
     playBeep,
-    deviceFingerprint
+    deviceFingerprint,
+    forceSyncMaster
   } = useLab();
 
   const rawClassParam = initialClassId || getPortalParam('turma') || getPortalParam('turmaid') || '';
 
-  // Determine active class with exact matching priority
+  // Determine active class with resilient matching (handles extra spaces like 'TURMA  TESTE')
   const currentClass = useMemo(() => {
+    const normalizeStr = (s: string) => s.trim().toLowerCase().replace(/\s+/g, ' ');
     if (rawClassParam) {
+      const normRaw = normalizeStr(rawClassParam);
       const byId = classes.find(c => c.id === rawClassParam);
       if (byId) return byId;
-      const byName = classes.find(c => c.name.trim().toLowerCase() === rawClassParam.trim().toLowerCase());
+      const byName = classes.find(c => normalizeStr(c.name) === normRaw);
       if (byName) return byName;
-      const byCode = classes.find(c => c.code && c.code.trim().toLowerCase() === rawClassParam.trim().toLowerCase());
+      const byCode = classes.find(c => c.code && normalizeStr(c.code) === normRaw);
       if (byCode) return byCode;
+    }
+    // Check if any class has an active live session right now
+    const anyLive = sessions.find(s => s.isLive && !s.isLocked);
+    if (anyLive?.classGroupId) {
+      const byLive = classes.find(c => c.id === anyLive.classGroupId);
+      if (byLive) return byLive;
     }
     if (activeSession && activeSession.classGroupId) {
       const bySession = classes.find(c => c.id === activeSession.classGroupId);
@@ -90,7 +99,7 @@ export const SecureStudentPortal: React.FC<SecureStudentPortalProps> = ({
       if (bySelected) return bySelected;
     }
     return classes[0];
-  }, [classes, rawClassParam, activeSession, selectedClassId]);
+  }, [classes, rawClassParam, activeSession, selectedClassId, sessions]);
 
   // Helper to reliably resolve the class for confirmation receipts and display
   const resolveConfirmedClass = (studentObj?: Student) => {
@@ -192,42 +201,70 @@ export const SecureStudentPortal: React.FC<SecureStudentPortalProps> = ({
   // Active session and period (intelligently identify target session from QR code or current class)
   const urlSessionId = getPortalParam('session') || getPortalParam('sessionId');
   const targetSession = useMemo(() => {
+    // 1. If explicit URL session is given and is live & unlocked
+    if (urlSessionId) {
+      const found = sessions.find(s => s.id === urlSessionId);
+      if (found && found.isLive && !found.isLocked) return found;
+    }
+
+    if (currentClass?.id) {
+      // 2. Look for today's live & unlocked session for this class
+      const classLiveToday = sessions.find(s => s.classGroupId === currentClass.id && isDateToday(s.date) && s.isLive && !s.isLocked);
+      if (classLiveToday) return classLiveToday;
+
+      // 3. Any live & unlocked session for this class
+      const classLive = sessions.find(s => s.classGroupId === currentClass.id && s.isLive && !s.isLocked);
+      if (classLive) return classLive;
+    }
+
+    // 4. Any live & unlocked session today across all classes
+    const anyLiveToday = sessions.find(s => isDateToday(s.date) && s.isLive && !s.isLocked);
+    if (anyLiveToday) return anyLiveToday;
+
+    // 5. Any live & unlocked session currently active anywhere
+    const anyLive = sessions.find(s => s.isLive && !s.isLocked);
+    if (anyLive) return anyLive;
+
+    // 6. If explicit URL session was passed (even if locked)
     if (urlSessionId) {
       const found = sessions.find(s => s.id === urlSessionId);
       if (found) return found;
     }
+
+    // 7. Today's session even if locked
     if (currentClass?.id) {
-      const classLive = sessions.find(s => s.classGroupId === currentClass.id && s.isLive && !s.isLocked);
-      if (classLive) return classLive;
-      const classLocked = sessions.find(s => s.classGroupId === currentClass.id && s.isLocked);
-      if (classLocked) return classLocked;
+      const classToday = sessions.find(s => s.classGroupId === currentClass.id && isDateToday(s.date));
+      if (classToday) return classToday;
     }
+
     return activeSession;
   }, [urlSessionId, sessions, currentClass, activeSession]);
 
   const isSessionLocked = Boolean(targetSession && (!targetSession.isLive || targetSession.isLocked));
   const isSessionLive = Boolean(targetSession && targetSession.isLive && !targetSession.isLocked);
 
-  // Check if a newer live session is already active for this class
+  // Check if a newer live session is already active for this class or system
   const newerActiveSession = useMemo(() => {
     if (!targetSession || !isSessionLocked) return null;
-    return sessions.find(s => s.classGroupId === targetSession.classGroupId && s.isLive && !s.isLocked);
-  }, [sessions, targetSession, isSessionLocked]);
+    return sessions.find(s => 
+      (s.classGroupId === targetSession.classGroupId || (currentClass && s.classGroupId === currentClass.id)) && 
+      s.isLive && !s.isLocked
+    );
+  }, [sessions, targetSession, isSessionLocked, currentClass]);
 
   const urlPeriod = initialPeriod || getPortalParam('period') || getPortalParam('etapa');
-  const activePeriod = (isSessionLive && targetSession?.activePeriod)
-    ? targetSession.activePeriod
-    : (urlPeriod || targetSession?.activePeriod || '1');
+  // QR code / URL period takes priority so scanning 2ª Aula QR always registers for 2ª Aula
+  const activePeriod = ((urlPeriod as ClassPeriod) || targetSession?.activePeriod || '1') as ClassPeriod;
 
   const stageLabels: Record<string, string> = {
     '1': '1ª Aula',
     '2': '2ª Aula',
-    'both': 'Chamada Integral (1ª e 2ª)',
-    'p1_start': '1ª Aula',
-    'p1_end': '1ª Aula',
-    'p2_start': '2ª Aula',
-    'p2_end': '2ª Aula',
-    'activity_single': 'Atividade Prática'
+    'p1_start': '1ª Aula (Início)',
+    'p1_end': '1ª Aula (Final)',
+    'p2_start': '2ª Aula (Início)',
+    'p2_end': '2ª Aula (Final)',
+    'both': 'Chamada Integral',
+    'activity_single': 'Chamada Integral'
   };
   const periodLabel = stageLabels[activePeriod] || '1ª Aula';
 
@@ -251,6 +288,11 @@ export const SecureStudentPortal: React.FC<SecureStudentPortalProps> = ({
   activePeriodRef.current = activePeriod;
   const playBeepRef = useRef(playBeep);
   playBeepRef.current = playBeep;
+
+  // Sync latest sessions from server on mount
+  useEffect(() => {
+    forceSyncMaster();
+  }, [forceSyncMaster]);
 
   // Single mount effect: sync class and prefill RA without blind auto-checkin conflicts
   useEffect(() => {
@@ -325,8 +367,26 @@ export const SecureStudentPortal: React.FC<SecureStudentPortalProps> = ({
     }
   }, []); // Run strictly once on mount
 
+  // Reset confirmation receipt when transitioning to a new session or period
+  const prevSessionIdRef = useRef<string | undefined>(targetSession?.id);
+  const prevPeriodRef = useRef<ClassPeriod>(activePeriod);
+
+  useEffect(() => {
+    const isNewSession = prevSessionIdRef.current && targetSession?.id && prevSessionIdRef.current !== targetSession.id;
+    const isNewPeriod = prevPeriodRef.current && activePeriod && prevPeriodRef.current !== activePeriod;
+
+    if (isNewSession || isNewPeriod) {
+      setConfirmedData(null);
+      setViewMode('form');
+      setFeedbackError(null);
+      setFeedbackWarning(null);
+    }
+    prevSessionIdRef.current = targetSession?.id;
+    prevPeriodRef.current = activePeriod;
+  }, [targetSession?.id, activePeriod]);
+
   // Execute check-in for a specific RA
-  const performCheckin = (cleanRa: string, allowOtherClass: boolean = false) => {
+  const performCheckin = async (cleanRa: string, allowOtherClass: boolean = false) => {
     setFeedbackError(null);
     setFeedbackWarning(null);
     if (allowOtherClass) {
@@ -345,16 +405,73 @@ export const SecureStudentPortal: React.FC<SecureStudentPortalProps> = ({
       return;
     }
 
-    if (isSessionLocked) {
-      setFeedbackError('A chamada desta aula foi encerrada pelo professor e novos check-ins estão bloqueados.');
-      playBeep('alert');
-      return;
+    // Only block if session is locked AND no other live session exists for this class
+    if (isSessionLocked && !newerActiveSession) {
+      const anyLiveSession = sessions.find(s => s.isLive && !s.isLocked);
+      if (!anyLiveSession) {
+        setFeedbackError('A chamada desta aula foi encerrada pelo professor e novos check-ins estão bloqueados.');
+        playBeep('alert');
+        return;
+      }
     }
 
     setIsSubmitting(true);
 
     try {
-      const result = studentSelfCheckin(cleanRa, tokenToUse, allowOtherClass, activePeriod as ClassPeriod, targetSession?.id);
+      let result = studentSelfCheckin(cleanRa, tokenToUse, allowOtherClass, activePeriod as ClassPeriod, targetSession?.id);
+
+      // If local state doesn't find a live session (e.g. race condition on first call of the day),
+      // consult the server checkin API to verify against authoritative server session
+      if (!result.success && !result.alreadyPresent && !result.needsOtherClassConfirmation && !result.notFound) {
+        try {
+          const apiRes = await fetch('/api/attendance/checkin', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({
+              registrationNumber: cleanRa,
+              sessionId: targetSession?.id || urlSessionId,
+              classGroupId: currentClass?.id || selectedClassId,
+              period: activePeriod,
+              deviceId: deviceFingerprint,
+              checkinMethod: 'qrcode',
+              allowOtherClass,
+            }),
+          });
+          const apiData = await apiRes.json();
+          if (apiData.success && apiData.student) {
+            result = {
+              success: true,
+              student: apiData.student,
+              message: apiData.message,
+            };
+            forceSyncMaster();
+          } else if (apiData.alreadyPresent && apiData.student) {
+            result = {
+              success: false,
+              alreadyPresent: true,
+              student: apiData.student,
+              existingRecord: apiData.existingRecord,
+              message: apiData.message,
+            };
+          } else if (apiData.needsOtherClassConfirmation) {
+            result = {
+              success: false,
+              needsOtherClassConfirmation: true,
+              student: apiData.student,
+              studentClassName: apiData.studentClassName,
+              targetClassName: apiData.targetClassName,
+              message: apiData.message,
+            };
+          } else if (apiData.message) {
+            result = {
+              ...result,
+              message: apiData.message,
+            };
+          }
+        } catch (_) {
+          // Fall back to local result
+        }
+      }
 
       if (result.needsOtherClassConfirmation) {
         setOtherClassPrompt({
@@ -391,6 +508,7 @@ export const SecureStudentPortal: React.FC<SecureStudentPortalProps> = ({
           authCode: authHash,
         });
         setFeedbackWarning(null);
+        setFeedbackError(null);
 
         playBeep('success');
         setViewMode('receipt');
@@ -418,6 +536,7 @@ export const SecureStudentPortal: React.FC<SecureStudentPortalProps> = ({
         setFeedbackWarning(
           result.message || `❌ Presença já registrada anteriormente nesta aula! O aluno(a) ${result.student.name} (RA: ${result.student.registrationNumber}) já possui presença confirmada. Não é permitido marcar presença mais de uma vez.`
         );
+        setFeedbackError(null);
         setViewMode('receipt');
       } else if (result.notFound) {
         playBeep('warning');

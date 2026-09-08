@@ -58,7 +58,7 @@ import { TeacherConflictAlert } from './TeacherConflictAlert';
 import { getPublicTelaoUrl, getPublicStudentCheckinUrl } from '../utils/publicUrl';
 
 interface LovableDashboardProps {
-  onOpenProjectionScreen: () => void;
+  onOpenProjectionScreen: (period?: ClassPeriod) => void;
   onOpenQuickPicker: () => void;
   onOpenNewSession?: () => void;
   onOpenStudentCheckInModal?: () => void;
@@ -197,8 +197,14 @@ export const LovableDashboard: React.FC<LovableDashboardProps> = ({
     }, 3500);
   };
 
-  const studentCheckinUrl = getPublicStudentCheckinUrl(dynamicToken || 'AUTO', selectedClassId, 'checkin');
-  const tvScreenUrl = getPublicTelaoUrl(selectedClassId);
+  const studentCheckinUrl = getPublicStudentCheckinUrl(
+    dynamicToken || 'AUTO', 
+    selectedClassId, 
+    'checkin',
+    currentPeriod,
+    activeSession?.id
+  );
+  const tvScreenUrl = getPublicTelaoUrl(selectedClassId, currentPeriod, activeSession?.id);
 
   const handleCopyStudentLink = () => {
     navigator.clipboard.writeText(studentCheckinUrl).then(() => {
@@ -549,7 +555,7 @@ export const LovableDashboard: React.FC<LovableDashboardProps> = ({
           {/* Telão Projection */}
           <button
             id="btn-open-telao-projection"
-            onClick={onOpenProjectionScreen}
+            onClick={() => onOpenProjectionScreen(currentPeriod)}
             className="px-5 py-2.5 rounded-2xl bg-slate-950 hover:bg-slate-900 text-white text-xs sm:text-sm font-bold flex items-center gap-1.5 transition-all active:scale-95 cursor-pointer shadow-2xs"
             title="Abrir modo Telão em tela cheia"
           >
@@ -768,7 +774,7 @@ export const LovableDashboard: React.FC<LovableDashboardProps> = ({
                       <button
                         type="button"
                         id="btn-quick-open-telao-from-qr"
-                        onClick={onOpenProjectionScreen}
+                        onClick={() => onOpenProjectionScreen(currentPeriod)}
                         className="px-3.5 py-1.5 bg-sky-50 hover:bg-sky-100 text-sky-800 text-xs font-bold rounded-xl border border-sky-200 flex items-center gap-1.5 transition-all shadow-2xs active:scale-95 cursor-pointer"
                         title="Abrir tela de projeção para Smart TV ou Projetor"
                       >
@@ -1024,7 +1030,7 @@ export const LovableDashboard: React.FC<LovableDashboardProps> = ({
                     <button
                       type="button"
                       id="btn-open-projection-modal"
-                      onClick={onOpenProjectionScreen}
+                      onClick={() => onOpenProjectionScreen(currentPeriod)}
                       className="flex-1 sm:flex-none px-4 py-2.5 bg-teal-500 hover:bg-teal-400 text-slate-950 rounded-xl font-black text-xs shadow-lg shadow-teal-500/20 flex items-center justify-center gap-2 cursor-pointer active:scale-95 transition-all"
                     >
                       <Monitor className="w-4 h-4" />

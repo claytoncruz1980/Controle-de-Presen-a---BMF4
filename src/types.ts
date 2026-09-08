@@ -161,6 +161,7 @@ export interface LabSession {
   isPaused?: boolean; // Chamada pausada temporariamente pelo professor
   isLocked: boolean; // Encerrada em definitivo pelo professor
   openedAt?: string; // Timestamp ISO de quando a chamada foi aberta
+  timestamp?: number; // Timestamp numérico milissegundos para ordenação e unicidade estrita
   closedAt?: string;
   notes?: string;
   syncStatus?: 'synced' | 'pending' | 'offline';

@@ -116,6 +116,8 @@ interface LabContextType {
   resumeLiveSession: (sessionId?: string, classGroupId?: string) => void;
   reopenCurrentSession: (sessionId?: string, classGroupId?: string) => void;
   lockCurrentSession: (sessionId?: string, classGroupId?: string) => void;
+  clearActiveSessionCache: () => void;
+  resetSessionState: () => void;
   lockPeriod1: (sessionId?: string) => void;
   lockPeriod2: (sessionId?: string) => void;
   setActivePeriod: (period: ClassPeriod) => void;
@@ -512,6 +514,108 @@ const LabContext = createContext<LabContextType | undefined>(undefined);
 
 const STORAGE_PREFIX = 'bmf4_presenca_v3_';
 
+// Universal date helpers for timezone-safe calendar comparison
+export const getLocalDateString = (d: Date = new Date()): string => {
+  const y = d.getFullYear();
+  const m = String(d.getMonth() + 1).padStart(2, '0');
+  const day = String(d.getDate()).padStart(2, '0');
+  return `${y}-${m}-${day}`;
+};
+
+export const isDateToday = (sessionDate?: string): boolean => {
+  if (!sessionDate) return false;
+  const todayLocal = getLocalDateString();
+  const todayIso = new Date().toISOString().split('T')[0];
+  return sessionDate === todayLocal || sessionDate === todayIso;
+};
+
+export interface UseSessionResetOptions {
+  activeSession: LabSession | null;
+  clearActiveSessionCache: () => void;
+  setDynamicSecurityHash?: (hash: string) => void;
+  setDynamicToken?: (token: string) => void;
+  setDismissedConflictId?: (id: string | null) => void;
+  onSessionClosed?: (closedSessionId?: string) => void;
+}
+
+/**
+ * Hook 'useSessionReset'
+ * Monitors activeSession state and automatically clears localStorage, sessionStorage
+ * and global control states whenever the session is closed/locked or when the component
+ * unmounts, ensuring a clean initialization for every new session.
+ */
+export const useSessionReset = ({
+  activeSession,
+  clearActiveSessionCache,
+  setDynamicSecurityHash,
+  setDynamicToken,
+  setDismissedConflictId,
+  onSessionClosed,
+}: UseSessionResetOptions) => {
+  const prevSessionRef = useRef<{
+    id?: string;
+    isLocked?: boolean;
+    isLive?: boolean;
+  } | null>(null);
+
+  // Monitor activeSession state transitions
+  useEffect(() => {
+    const prev = prevSessionRef.current;
+    const currentId = activeSession?.id;
+    const isLocked = Boolean(activeSession?.isLocked);
+    const isLive = Boolean(activeSession?.isLive);
+
+    if (prev) {
+      const wasActive = Boolean(prev.isLive && !prev.isLocked);
+      const isNowClosed = isLocked || !isLive;
+
+      // When the active session transitions from live to locked or closed
+      if (wasActive && isNowClosed) {
+        clearActiveSessionCache();
+        if (setDynamicSecurityHash) setDynamicSecurityHash('');
+        if (setDismissedConflictId) setDismissedConflictId(null);
+        if (onSessionClosed) onSessionClosed(prev.id);
+      }
+
+      // When switching to a different session ID
+      if (prev.id && currentId && prev.id !== currentId) {
+        clearActiveSessionCache();
+        if (setDynamicSecurityHash) setDynamicSecurityHash('');
+        if (setDismissedConflictId) setDismissedConflictId(null);
+      }
+    }
+
+    prevSessionRef.current = activeSession 
+      ? { id: activeSession.id, isLocked: activeSession.isLocked, isLive: activeSession.isLive }
+      : null;
+  }, [
+    activeSession?.id,
+    activeSession?.isLocked,
+    activeSession?.isLive,
+    clearActiveSessionCache,
+    setDynamicSecurityHash,
+    setDismissedConflictId,
+    onSessionClosed,
+  ]);
+
+  // Clean unmount monitoring: clean session cache when the component unmounts
+  useEffect(() => {
+    return () => {
+      clearActiveSessionCache();
+      if (setDynamicSecurityHash) setDynamicSecurityHash('');
+      if (setDismissedConflictId) setDismissedConflictId(null);
+    };
+  }, [clearActiveSessionCache, setDynamicSecurityHash, setDismissedConflictId]);
+
+  const resetSessionState = useCallback(() => {
+    clearActiveSessionCache();
+    if (setDynamicSecurityHash) setDynamicSecurityHash('');
+    if (setDismissedConflictId) setDismissedConflictId(null);
+  }, [clearActiveSessionCache, setDynamicSecurityHash, setDismissedConflictId]);
+
+  return { resetSessionState };
+};
+
 export const LabProvider: React.FC<{ children: ReactNode }> = ({ children }) => {
   // 0. Deleted Professors tracking
   const [deletedProfessorIds, setDeletedProfessorIds] = useState<string[]>(() => {
@@ -644,9 +748,20 @@ export const LabProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
     const savedDeleted = localStorage.getItem(STORAGE_PREFIX + 'deleted_session_ids');
     const deletedList: string[] = savedDeleted ? JSON.parse(savedDeleted) : [];
     const delSet = new Set(deletedList);
-    parsed = (parsed || []).filter(s => s && s.id && !delSet.has(s.id));
+    const todayStr = new Date().toISOString().split('T')[0];
 
-    // If opened directly on projection / TV portal, ensure an active session exists
+    // Filter deleted sessions and ensure sessions from previous days are never left live/unlocked
+    parsed = (parsed || [])
+      .filter(s => s && s.id && !delSet.has(s.id))
+      .map(s => {
+        // Any session older than today must be closed to avoid carrying over presence into new classes
+        if (s.date && s.date < todayStr && s.isLive) {
+          return { ...s, isLive: false, isLocked: true, isPaused: false };
+        }
+        return s;
+      });
+
+    // If opened directly on projection / TV portal, ensure an active session exists for today
     if (typeof window !== 'undefined') {
       const isTelao = window.location.search.includes('portal=telao') || 
                       window.location.search.includes('portal=tv') || 
@@ -656,8 +771,11 @@ export const LabProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
       
       const urlParams = new URLSearchParams(window.location.search);
       const targetTurma = urlParams.get('turma') || urlParams.get('turmaid') || urlParams.get('class') || 'class-bmf4-default';
+      const urlPeriod = (urlParams.get('period') || urlParams.get('etapa') || '1') as ClassPeriod;
 
-      if (isTelao && !parsed.some(s => s.classGroupId === targetTurma)) {
+      const existingTodaySession = parsed.find(s => s.classGroupId === targetTurma && isDateToday(s.date));
+
+      if (isTelao && !existingTodaySession) {
         const liveSession: LabSession = {
           id: `sess-${Date.now()}`,
           classGroupId: targetTurma,
@@ -666,7 +784,7 @@ export const LabProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
           professorName: 'Prof. Dr. Juliano Pereira',
           activityCategory: 'pratica',
           activityType: 'aula_pratica',
-          activePeriod: '1',
+          activePeriod: urlPeriod,
           isPeriod1Locked: false,
           isPeriod2Locked: false,
           isP1StartLocked: false,
@@ -674,7 +792,7 @@ export const LabProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
           isP2StartLocked: false,
           isP2EndLocked: false,
           isActivitySingleLocked: false,
-          date: new Date().toISOString().split('T')[0],
+          date: todayStr,
           startTime: `${String(new Date().getHours()).padStart(2, '0')}:${String(new Date().getMinutes()).padStart(2, '0')}`,
           endTime: '12:00',
           topic: 'Aula BMF4 - Morfofuncional',
@@ -688,6 +806,9 @@ export const LabProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
           syncStatus: 'synced',
         };
         parsed = [liveSession, ...parsed];
+      } else if (isTelao && existingTodaySession && urlParams.get('period')) {
+        // Sync active period from URL for TV/Telão
+        parsed = parsed.map(s => s.id === existingTodaySession.id ? { ...s, activePeriod: urlPeriod, isLive: true, isLocked: false } : s);
       }
     }
     return parsed;
@@ -1361,7 +1482,30 @@ export const LabProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
           if (isCancelled) return;
           try {
             const data = JSON.parse(event.data);
-            if ((data.type === 'SYNC_STATE' || data.type === 'STATE_UPDATED') && data.state) {
+            if (data.type === 'CHECKIN_CONFIRMED') {
+              if (data.sessionId && data.record) {
+                const targetKey = data.studentId || data.studentRa;
+                if (targetKey) {
+                  setSessions(prev => prev.map(s => {
+                    if (s.id === data.sessionId) {
+                      return {
+                        ...s,
+                        attendance: {
+                          ...s.attendance,
+                          [targetKey]: data.record,
+                          ...(data.studentRa ? { [data.studentRa]: data.record } : {}),
+                          ...(data.studentId ? { [data.studentId]: data.record } : {})
+                        }
+                      };
+                    }
+                    return s;
+                  }));
+                }
+              }
+              if (data.state) {
+                applyServerState(data.state);
+              }
+            } else if ((data.type === 'SYNC_STATE' || data.type === 'STATE_UPDATED') && data.state) {
               applyServerState(data.state);
             } else if (data.type === 'PONG') {
               setRealtimeConnected(true);
@@ -1521,6 +1665,17 @@ export const LabProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
   const connectedDevices = connectedDevicesList.length;
 
   const forceSyncMaster = useCallback(async () => {
+    try {
+      const res = await fetch('/api/sync/state');
+      const data = await res.json();
+      if (data.success && data.state) {
+        applyServerState(data.state);
+        return;
+      }
+    } catch (err) {
+      console.debug('Server sync notice, using cloud fallback:', err);
+    }
+
     if (Date.now() > firestoreBlockedUntilRef.current) {
       try {
         const syncDocRef = doc(db, 'sync_state', 'master');
@@ -1536,18 +1691,8 @@ export const LabProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
         if (err?.code === 'resource-exhausted') {
           firestoreBlockedUntilRef.current = Date.now() + 5 * 60 * 1000;
         }
-        console.debug('Firestore initial load notice, using server fallback:', err?.message || err);
+        console.debug('Firestore initial load notice:', err?.message || err);
       }
-    }
-
-    try {
-      const res = await fetch('/api/sync/state');
-      const data = await res.json();
-      if (data.success && data.state) {
-        applyServerState(data.state);
-      }
-    } catch (err) {
-      console.debug('Server sync fallback notice:', err);
     }
   }, [applyServerState]);
 
@@ -1640,6 +1785,53 @@ export const LabProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
 
     return () => clearInterval(timer);
   }, [appSettings.tokenRotationSeconds]);
+
+  // Generate a guaranteed unique dynamic QR token and security hash with timestamp
+  const generateFreshDynamicTokenAndHash = () => {
+    const ts = Date.now();
+    const entropy = Math.random().toString(36).substring(2, 6).toUpperCase();
+    const token = `BMF-${entropy}-${ts.toString(36).slice(-4).toUpperCase()}`;
+    const hash = `${ts}-${Math.random().toString(36).substring(2, 10).toUpperCase()}`;
+    setDynamicToken(token);
+    setDynamicSecurityHash(hash);
+    setDynamicSecondsLeft(appSettings.tokenRotationSeconds || 10);
+    return { token, hash, timestamp: ts };
+  };
+
+  // Complete cleanup of active session cache from localStorage, sessionStorage and control variables
+  const clearActiveSessionCache = useCallback(() => {
+    try {
+      // LocalStorage session cache cleanup
+      localStorage.removeItem(STORAGE_PREFIX + 'active_session');
+      localStorage.removeItem(STORAGE_PREFIX + 'active_session_id');
+      localStorage.removeItem(STORAGE_PREFIX + 'active_session_cache');
+      localStorage.removeItem(STORAGE_PREFIX + 'active_period');
+      localStorage.removeItem(STORAGE_PREFIX + 'current_period');
+      localStorage.removeItem(STORAGE_PREFIX + 'current_session');
+      localStorage.removeItem(STORAGE_PREFIX + 'dynamic_token');
+      localStorage.removeItem(STORAGE_PREFIX + 'dynamic_hash');
+      localStorage.removeItem(STORAGE_PREFIX + 'active_session_state');
+      localStorage.removeItem('bmf4_active_session');
+      localStorage.removeItem('bmf4_active_session_id');
+      localStorage.removeItem('bmf4_current_period');
+      localStorage.removeItem('bmf4_session_cache');
+      localStorage.removeItem('bmf4_telao_selected_period');
+      localStorage.removeItem('bmf4_last_active_session');
+      localStorage.removeItem('bmf4_student_receipt');
+    } catch (_) {}
+
+    try {
+      // SessionStorage session cache cleanup
+      sessionStorage.removeItem('bmf4_active_session');
+      sessionStorage.removeItem('bmf4_active_session_id');
+      sessionStorage.removeItem('bmf4_current_period');
+      sessionStorage.removeItem('bmf4_session_cache');
+      sessionStorage.removeItem('bmf4_last_checkin');
+      sessionStorage.removeItem('bmf4_student_receipt');
+      sessionStorage.removeItem('bmf4_target_session_id');
+      sessionStorage.removeItem('bmf4_target_period');
+    } catch (_) {}
+  }, []);
 
   // Persist into LocalStorage
   useEffect(() => {
@@ -1908,23 +2100,42 @@ export const LabProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
 
   // Find active live session or most recent session for selected class (prioritizing today's session)
   const activeSession = useMemo(() => {
-    const classSessions = sessions.filter(s => s.classGroupId === selectedClassId);
-    // Priority 1: Live & unlocked session
-    const live = classSessions.find(s => s.isLive && !s.isLocked);
-    if (live) return live;
-    
-    // Priority 2: Any live session
-    const anyLive = classSessions.find(s => s.isLive);
-    if (anyLive) return anyLive;
+    const classSessions = sessions
+      .filter(s => s.classGroupId === selectedClassId)
+      .sort((a, b) => {
+        const timeA = a.timestamp || (a.date ? new Date(a.date).getTime() : 0);
+        const timeB = b.timestamp || (b.date ? new Date(b.date).getTime() : 0);
+        return timeB - timeA;
+      });
 
-    // Priority 3: Session created today for this class
-    const todayStr = new Date().toISOString().split('T')[0];
-    const todaySession = classSessions.find(s => s.date === todayStr);
+    // Priority 1: Live & unlocked session FOR TODAY
+    const todayLiveUnlocked = classSessions.find(s => isDateToday(s.date) && s.isLive && !s.isLocked);
+    if (todayLiveUnlocked) return todayLiveUnlocked;
+
+    // Priority 2: Any live & unlocked session from this class (actively running)
+    const anyLiveUnlocked = classSessions.find(s => s.isLive && !s.isLocked);
+    if (anyLiveUnlocked) return anyLiveUnlocked;
+
+    // Priority 3: Any live session FOR TODAY
+    const todayLive = classSessions.find(s => isDateToday(s.date) && s.isLive);
+    if (todayLive) return todayLive;
+
+    // Priority 4: Any session created today for this class (even if locked)
+    const todaySession = classSessions.find(s => isDateToday(s.date));
     if (todaySession) return todaySession;
 
-    // When all sessions for today are deleted, do not fall back to old locked sessions from previous days
+    // When all sessions for today are deleted/finished, do not fall back to old locked sessions from previous days
     return null;
   }, [sessions, selectedClassId]);
+
+  // Hook 'useSessionReset' within LabProvider monitoring activeSession lifecycle
+  const { resetSessionState } = useSessionReset({
+    activeSession,
+    clearActiveSessionCache,
+    setDynamicSecurityHash,
+    setDynamicToken,
+    setDismissedConflictId,
+  });
 
   // Detect simultaneous teacher conflict in the exact same class
   const teacherConflict = useMemo<TeacherConflictInfo | null>(() => {
@@ -2200,15 +2411,24 @@ export const LabProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
 
   // Reopen locked session (Reabrir chamada encerrada)
   const reopenCurrentSession = (targetSessionId?: string, targetClassGroupId?: string) => {
-    const effectiveTargetId = targetSessionId || activeSession?.id;
     const effectiveClass = targetClassGroupId || activeSession?.classGroupId || selectedClassId;
+    const { token: freshToken } = generateFreshDynamicTokenAndHash();
+
+    // Determine target session to reopen
+    const targetSession = targetSessionId 
+      ? sessions.find(s => s.id === targetSessionId)
+      : (sessions.find(s => s.classGroupId === effectiveClass && isDateToday(s.date)) || 
+         sessions.find(s => s.classGroupId === effectiveClass && s.isLive) ||
+         sessions.find(s => s.classGroupId === effectiveClass));
+
     let updatedSessions: LabSession[];
 
-    if (effectiveTargetId) {
+    if (targetSession) {
       updatedSessions = sessions.map(s => {
-        if (s.id === effectiveTargetId) {
+        if (s.id === targetSession.id) {
           return {
             ...s,
+            checkinCode: freshToken,
             isLive: true,
             isPaused: false,
             isLocked: false,
@@ -2225,25 +2445,39 @@ export const LabProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
         return s;
       });
     } else {
-      updatedSessions = sessions.map(s => {
-        if (s.classGroupId === effectiveClass) {
-          return {
-            ...s,
-            isLive: true,
-            isPaused: false,
-            isLocked: false,
-            isPeriod1Locked: false,
-            isPeriod2Locked: false,
-            isP1StartLocked: false,
-            isP1EndLocked: false,
-            isP2StartLocked: false,
-            isP2EndLocked: false,
-            isActivitySingleLocked: false,
-            closedAt: undefined,
-          };
-        }
-        return s;
-      });
+      // If no session exists at all for this class, initialize a new live one
+      const todayStr = new Date().toISOString().split('T')[0];
+      const targetProf = professors.find(p => p.id === activeProfessorId) || activeProfessor;
+      const targetClass = classes.find(c => c.id === effectiveClass);
+      const newSess: LabSession = {
+        id: `sess-${Date.now()}`,
+        classGroupId: effectiveClass || 'class-bmf4-default',
+        discipline: targetClass?.discipline || 'BMF4',
+        professorId: activeProfessorId || 'prof-juliano',
+        professorName: targetProf?.name || 'Prof. Docente',
+        activityCategory: 'pratica',
+        activityType: 'aula_pratica',
+        activePeriod: 'p1_start',
+        isPeriod1Locked: false,
+        isPeriod2Locked: false,
+        isP1StartLocked: false,
+        isP1EndLocked: false,
+        isP2StartLocked: false,
+        isP2EndLocked: false,
+        isActivitySingleLocked: false,
+        date: todayStr,
+        startTime: `${String(new Date().getHours()).padStart(2, '0')}:${String(new Date().getMinutes()).padStart(2, '0')}`,
+        endTime: '12:00',
+        topic: 'Aula BMF4 - Morfofuncional',
+        anatomicalSpecimens: ['Peças anatômicas / Roteiro prático'],
+        checkinCode: freshToken,
+        isLive: true,
+        isPaused: false,
+        isLocked: false,
+        attendance: {},
+        syncStatus: 'synced',
+      };
+      updatedSessions = [newSess, ...sessions];
     }
 
     setSessions(updatedSessions);
@@ -2343,7 +2577,11 @@ export const LabProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
       localStorage.setItem(STORAGE_PREFIX + 'sessions', JSON.stringify(updatedSessions));
     } catch {}
 
+    // Complete cleanup of active session cache and reset control variables
+    clearActiveSessionCache();
     setDismissedConflictId(null);
+    setDynamicToken(`BMF-CLOSED-${Date.now().toString(36).slice(-4).toUpperCase()}`);
+    setDynamicSecurityHash('');
 
     const nowTs = Date.now();
     setLocalLastUpdated(nowTs);
@@ -2440,22 +2678,55 @@ export const LabProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
 
   // Switch Active Period ('1' | '2' | 'both', 'p1_start', 'p1_end', 'p2_start', 'p2_end', 'activity_single')
   const setActivePeriod = (period: ClassPeriod) => {
-    if (!activeSession) return;
+    const todayStr = new Date().toISOString().split('T')[0];
+    const liveSessionToday = sessions.find(s => s.classGroupId === selectedClassId && s.date === todayStr && s.isLive && !s.isLocked);
+    const targetSessionToUpdate = liveSessionToday || activeSession;
+
+    if (!targetSessionToUpdate || targetSessionToUpdate.isLocked || !targetSessionToUpdate.isLive) {
+      // Start a fresh, separate live session for today with this period directly
+      startNewSession({
+        classGroupId: selectedClassId,
+        topic: 'Aula BMF4 - Morfofuncional',
+        activityCategory: 'pratica',
+        activityType: 'aula_pratica',
+        activePeriod: period,
+        date: todayStr,
+      });
+      return;
+    }
+
+    const { token: freshToken } = generateFreshDynamicTokenAndHash();
+
     const updatedSessions = sessions.map(s => {
-      if (s.id === activeSession.id) {
+      if (s.id === targetSessionToUpdate.id) {
         const patch: Partial<LabSession> = {
           activePeriod: period,
           isLive: true,
           isLocked: false,
+          isPaused: false,
+          checkinCode: freshToken,
         };
-        // Ensure the newly selected period is marked unlocked for check-ins
-        if (period === 'p1_start') patch.isP1StartLocked = false;
-        if (period === 'p1_end') patch.isP1EndLocked = false;
-        if (period === 'p2_start') patch.isP2StartLocked = false;
-        if (period === 'p2_end') patch.isP2EndLocked = false;
-        if (period === '1') patch.isPeriod1Locked = false;
-        if (period === '2') patch.isPeriod2Locked = false;
-        if (period === 'activity_single') patch.isActivitySingleLocked = false;
+
+        // If advancing to 2ª Aula, ensure period 1 is cleanly locked and period 2 unlocked
+        if (period === '2' || period === 'p2_start' || period === 'p2_end') {
+          patch.isPeriod1Locked = true;
+          patch.isP1StartLocked = true;
+          patch.isP1EndLocked = true;
+          patch.isPeriod2Locked = false;
+          if (period === 'p2_start') patch.isP2StartLocked = false;
+          if (period === 'p2_end') patch.isP2EndLocked = false;
+        } else if (period === '1' || period === 'p1_start' || period === 'p1_end') {
+          patch.isPeriod1Locked = false;
+          if (period === 'p1_start') patch.isP1StartLocked = false;
+          if (period === 'p1_end') patch.isP1EndLocked = false;
+        } else if (period === 'both') {
+          patch.isPeriod1Locked = false;
+          patch.isPeriod2Locked = false;
+          patch.isP1StartLocked = false;
+          patch.isP2StartLocked = false;
+        } else if (period === 'activity_single') {
+          patch.isActivitySingleLocked = false;
+        }
 
         return {
           ...s,
@@ -2468,6 +2739,8 @@ export const LabProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
     setSessions(updatedSessions);
     try {
       localStorage.setItem(STORAGE_PREFIX + 'sessions', JSON.stringify(updatedSessions));
+      localStorage.setItem(STORAGE_PREFIX + 'active_period', period);
+      sessionStorage.setItem('bmf4_current_period', period);
     } catch {}
 
     const nowTs = Date.now();
@@ -2493,12 +2766,16 @@ export const LabProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
     const effectiveId = targetSessionId || activeSession?.id;
     if (!effectiveId) return;
 
+    const { token: freshToken } = generateFreshDynamicTokenAndHash();
+
     const updatedSessions = sessions.map(s => {
       if (s.id === effectiveId) {
         const patch: Partial<LabSession> = {
           activePeriod: toPeriod,
           isLive: true,
           isLocked: false,
+          isPaused: false,
+          checkinCode: freshToken,
         };
 
         // Lock the previous period
@@ -2536,6 +2813,8 @@ export const LabProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
     setSessions(updatedSessions);
     try {
       localStorage.setItem(STORAGE_PREFIX + 'sessions', JSON.stringify(updatedSessions));
+      localStorage.setItem(STORAGE_PREFIX + 'active_period', toPeriod);
+      sessionStorage.setItem('bmf4_current_period', toPeriod);
     } catch {}
 
     const nowTs = Date.now();
@@ -3080,13 +3359,18 @@ export const LabProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
     const cleanInputRa = normalizeRa(registrationNumber);
     const student = students.find(s => matchStudentRa(s.registrationNumber, cleanInputRa));
 
+    const todayStr = new Date().toISOString().split('T')[0];
+
     // Priority 0: Explicit Session ID from QR code / URL
     if (targetSessionId) {
       const explicitSession = sessions.find(s => s.id === targetSessionId);
       if (explicitSession) {
         if (explicitSession.isLocked || !explicitSession.isLive) {
-          // Check if there is a newer active session for this class
-          const newerActive = sessions.find(s => s.classGroupId === explicitSession.classGroupId && s.isLive && !s.isLocked);
+          // Check if there is a newer active session for this class or student
+          const newerActive = sessions.find(s => 
+            (s.classGroupId === explicitSession.classGroupId || (student && s.classGroupId === student.classGroupId)) && 
+            s.isLive && !s.isLocked
+          );
           if (newerActive) {
             targetSession = newerActive;
           } else {
@@ -3102,7 +3386,7 @@ export const LabProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
       }
     }
 
-    // Priority 1: Current active session if live & unlocked (primary focus of the lab/TV)
+    // Priority 1: Current active session if live & unlocked
     if (!targetSession && activeSession && activeSession.isLive && !activeSession.isLocked) {
       targetSession = activeSession;
     }
@@ -3123,7 +3407,15 @@ export const LabProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
       }
     }
 
-    // Priority 4: Any live & unlocked session in the system
+    // Priority 4: Any live & unlocked session today
+    if (!targetSession) {
+      const anyLiveToday = sessions.find(s => isDateToday(s.date) && s.isLive && !s.isLocked);
+      if (anyLiveToday) {
+        targetSession = anyLiveToday;
+      }
+    }
+
+    // Priority 5: Any live & unlocked session anywhere in the system
     if (!targetSession) {
       const anyLiveSession = sessions.find(s => s.isLive && !s.isLocked);
       if (anyLiveSession) {
@@ -3131,28 +3423,33 @@ export const LabProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
       }
     }
 
-    const todayStr = new Date().toISOString().split('T')[0];
+    // Priority 6: Fall back to activeSession if available and not locked
+    if (!targetSession && activeSession && !activeSession.isLocked) {
+      targetSession = activeSession;
+    }
+
     const targetClassId = selectedClassId || student?.classGroupId || 'class-bmf4-default';
 
     // If no live & unlocked session was found:
     if (!targetSession) {
-      // Check if there is a session for this class that was locked by the professor
-      const lockedSession = sessions.find(s => 
+      // Check if there is a session for this class TODAY that was locked by the professor
+      const lockedTodaySession = sessions.find(s => 
         (s.classGroupId === targetClassId || (student && s.classGroupId === student.classGroupId)) && 
+        isDateToday(s.date) &&
         s.isLocked
       );
 
-      if (lockedSession) {
+      if (lockedTodaySession) {
         return { 
           success: false, 
-          message: 'A chamada já foi encerrada e bloqueada pelo professor. Caso precise marcar presença, solicite a reabertura ao docente.', 
+          message: 'A chamada desta aula hoje já foi encerrada e bloqueada pelo professor. Caso precise marcar presença, solicite a reabertura ao docente.', 
           sessionLocked: true 
         };
       }
 
       return {
         success: false,
-        message: 'O professor ainda não iniciou a chamada desta turma. Aguarde a abertura da chamada.',
+        message: 'O professor ainda não abriu a chamada desta turma para hoje. Aguarde o início da chamada no telão.',
         sessionLocked: false
       };
     }
@@ -3249,21 +3546,25 @@ export const LabProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
 
     if (isAlreadyPresent) {
       playBeep('warning');
-      const recordedTime = (currentPeriod === 'p1_start' && existingRec?.p1StartTimestamp)
-        || (currentPeriod === 'p1_end' && existingRec?.p1EndTimestamp)
-        || (currentPeriod === 'p2_start' && existingRec?.p2StartTimestamp)
-        || (currentPeriod === 'p2_end' && existingRec?.p2EndTimestamp)
-        || existingRec?.period1Timestamp
-        || existingRec?.period2Timestamp
-        || existingRec?.timestamp 
-        || timeStr;
+      const isPeriod2Query = currentPeriod === '2' || currentPeriod === 'p2_start' || currentPeriod === 'p2_end';
+      const recordedTime = isPeriod2Query
+        ? (existingRec?.p2StartTimestamp || existingRec?.p2EndTimestamp || existingRec?.period2Timestamp || existingRec?.timestamp || timeStr)
+        : (existingRec?.p1StartTimestamp || existingRec?.p1EndTimestamp || existingRec?.period1Timestamp || existingRec?.timestamp || timeStr);
 
-      const stageName = (currentPeriod === '1' || currentPeriod === 'p1_start' || currentPeriod === 'p1_end')
+      const stageName = currentPeriod === 'p1_start'
+        ? '1ª Aula (Início)'
+        : currentPeriod === 'p1_end'
+        ? '1ª Aula (Final)'
+        : currentPeriod === 'p2_start'
+        ? '2ª Aula (Início)'
+        : currentPeriod === 'p2_end'
+        ? '2ª Aula (Final)'
+        : currentPeriod === '1'
         ? '1ª Aula'
-        : (currentPeriod === '2' || currentPeriod === 'p2_start' || currentPeriod === 'p2_end')
+        : currentPeriod === '2'
         ? '2ª Aula'
-        : currentPeriod === 'both'
-        ? 'Chamada Integral (1ª e 2ª Aula)'
+        : currentPeriod === 'both' || currentPeriod === 'activity_single'
+        ? 'Chamada Integral'
         : 'nesta chamada';
 
       return {
@@ -4588,13 +4889,22 @@ export const LabProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
     playBeep('alert');
   };
 
-  // Start new lab session
+  // Start new lab session with guaranteed unique session ID and dynamic QR code
   const startNewSession = (
     optionsOrTopic: string | StartSessionOptions, 
     specimens?: string[], 
     notes?: string
   ) => {
-    const code = `BMF-${Math.floor(100 + Math.random() * 900)}`;
+    const uniqueTs = Date.now();
+    const uniqueEntropy = Math.random().toString(36).substring(2, 9).toUpperCase();
+    const uniqueSessionId = `sess-${uniqueTs}-${uniqueEntropy}`;
+
+    // Generate fresh dynamic QR token and security hash with timestamp
+    const { token: freshDynamicToken } = generateFreshDynamicTokenAndHash();
+
+    // Clear active session cache before opening new session
+    clearActiveSessionCache();
+
     const isOptionsObj = typeof optionsOrTopic === 'object';
     const topic = isOptionsObj ? optionsOrTopic.topic : optionsOrTopic;
     const targetClassId = (isOptionsObj && optionsOrTopic.classGroupId) ? optionsOrTopic.classGroupId : selectedClassId;
@@ -4610,8 +4920,10 @@ export const LabProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
       ? optionsOrTopic.labLocation 
       : (category === 'pratica' ? 'anatomia' : undefined);
 
+    const isPeriod2Direct = period === '2' || period === 'p2_start' || period === 'p2_end';
+
     const newSession: LabSession = {
-      id: `sess-${Date.now()}`,
+      id: uniqueSessionId,
       classGroupId: targetClassId,
       discipline: 'BMF4',
       professorId: targetProfId,
@@ -4620,22 +4932,24 @@ export const LabProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
       activityType: actType,
       labLocation: labLoc,
       activePeriod: period,
-      isPeriod1Locked: false,
+      isPeriod1Locked: isPeriod2Direct,
       isPeriod2Locked: false,
-      isP1StartLocked: false,
-      isP1EndLocked: false,
+      isP1StartLocked: isPeriod2Direct || period === 'p1_end',
+      isP1EndLocked: isPeriod2Direct,
       isP2StartLocked: false,
       isP2EndLocked: false,
       isActivitySingleLocked: false,
       date: sessionDate,
-      startTime: `${String(new Date().getHours()).padStart(2, '0')}:${String(new Date().getMinutes()).padStart(2, '0')}`,
+      startTime: `${String(new Date(uniqueTs).getHours()).padStart(2, '0')}:${String(new Date(uniqueTs).getMinutes()).padStart(2, '0')}`,
       endTime: '12:00',
       topic: topic || (isActivity ? 'Atividade Prática BMF4' : 'Aula BMF4 - Morfofuncional'),
       anatomicalSpecimens: (isOptionsObj && optionsOrTopic.specimens) ? optionsOrTopic.specimens : (specimens && specimens.length > 0 ? specimens : ['Peças anatômicas / Roteiro prático']),
-      checkinCode: code,
+      checkinCode: freshDynamicToken,
       isLive: true,
       isLocked: false,
-      openedAt: new Date().toISOString(),
+      isPaused: false,
+      openedAt: new Date(uniqueTs).toISOString(),
+      timestamp: uniqueTs,
       notes: (isOptionsObj && optionsOrTopic.notes) ? optionsOrTopic.notes : (notes || 'Obrigatório uso de EPI: Jaleco abotoado, luvas e calçado fechado.'),
       attendance: {},
       syncStatus: 'synced',
@@ -4663,6 +4977,10 @@ export const LabProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
     setSessions(updatedSessions);
     try {
       localStorage.setItem(STORAGE_PREFIX + 'sessions', JSON.stringify(updatedSessions));
+      localStorage.setItem(STORAGE_PREFIX + 'active_session_id', uniqueSessionId);
+      localStorage.setItem(STORAGE_PREFIX + 'active_period', period);
+      sessionStorage.setItem('bmf4_active_session_id', uniqueSessionId);
+      sessionStorage.setItem('bmf4_current_period', period);
     } catch {}
 
     setDismissedConflictId(null);
@@ -4717,6 +5035,7 @@ export const LabProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
 
   const deleteSession = (sessionId: string) => {
     if (!sessionId) return;
+    clearActiveSessionCache();
     const newDeletedIds = Array.from(new Set([...deletedSessionIdsRef.current, sessionId]));
     setDeletedSessionIds(newDeletedIds);
     deletedSessionIdsRef.current = newDeletedIds;
@@ -4775,6 +5094,7 @@ export const LabProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
 
   const deleteMultipleSessions = (sessionIds: string[]) => {
     if (!Array.isArray(sessionIds) || sessionIds.length === 0) return;
+    clearActiveSessionCache();
     const idsSet = new Set(sessionIds);
     const newDeletedIds = Array.from(new Set([...deletedSessionIdsRef.current, ...sessionIds]));
     setDeletedSessionIds(newDeletedIds);
@@ -5093,6 +5413,7 @@ export const LabProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
 
   const deleteAllSessionsForClass = (classGroupId: string) => {
     if (!classGroupId) return;
+    clearActiveSessionCache();
     const classSessionsToDelete = sessions.filter(s => s.classGroupId === classGroupId);
     if (classSessionsToDelete.length === 0) return;
     const idsToDelete = classSessionsToDelete.map(s => s.id);
@@ -5485,6 +5806,8 @@ export const LabProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
         resumeLiveSession,
         reopenCurrentSession,
         lockCurrentSession,
+        clearActiveSessionCache,
+        resetSessionState,
         lockPeriod1,
         lockPeriod2,
         setActivePeriod,

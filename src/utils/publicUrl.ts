@@ -26,10 +26,12 @@ export function getPublicBaseUrl(): string {
 /**
  * Returns the public link to the Telão / TV Projection screen that opens without login.
  */
-export function getPublicTelaoUrl(classId?: string): string {
+export function getPublicTelaoUrl(classId?: string, period?: string, sessionId?: string): string {
   const base = getPublicBaseUrl();
-  const targetTurma = classId ? encodeURIComponent(classId) : '';
-  return `${base}/?portal=telao${targetTurma ? `&turma=${targetTurma}` : ''}#telao`;
+  const targetTurma = classId ? `&turma=${encodeURIComponent(classId)}` : '';
+  const periodParam = period ? `&period=${encodeURIComponent(period)}` : '';
+  const sessionParam = sessionId ? `&session=${encodeURIComponent(sessionId)}` : '';
+  return `${base}/?portal=telao${targetTurma}${periodParam}${sessionParam}#telao`;
 }
 
 /**

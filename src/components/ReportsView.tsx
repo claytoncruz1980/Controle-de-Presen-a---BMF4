@@ -38,6 +38,14 @@ import {
 import { useLab } from '../context/LabContext';
 import { ActivityType, ActivityCategory, LabSession, Student } from '../types';
 import { exportModernAttendanceExcel } from '../utils/exportExcel';
+import { 
+  getStudentAttendanceRecord, 
+  isRecordPresent, 
+  isRecordLate, 
+  isRecordExcused, 
+  isRecordAbsent, 
+  getRecordConsolidatedStatus 
+} from '../utils/attendanceHelpers';
 
 export const ReportsView: React.FC = () => {
   const { 
@@ -168,20 +176,14 @@ export const ReportsView: React.FC = () => {
     classStudents.forEach(st => {
       let stPresences = 0;
       filteredSessions.forEach(sess => {
-        const rec = sess.attendance?.[st.id];
-        const isPresent = rec?.status === 'present' || 
-          rec?.period1Status === 'present' || 
-          rec?.period2Status === 'present' || 
-          rec?.p1StartStatus === 'present' || 
-          rec?.p1EndStatus === 'present' || 
-          rec?.p2StartStatus === 'present' || 
-          rec?.p2EndStatus === 'present';
-        const isLate = rec?.status === 'late' || rec?.period1Status === 'late' || rec?.period2Status === 'late';
-        const isExcused = rec?.status === 'excused' || rec?.period1Status === 'excused' || rec?.period2Status === 'excused';
+        const rec = getStudentAttendanceRecord(sess.attendance, st);
+        const present = isRecordPresent(rec);
+        const late = isRecordLate(rec);
+        const excused = isRecordExcused(rec);
 
-        if (isPresent || isLate) {
+        if (present || late) {
           stPresences++;
-        } else if (isExcused) {
+        } else if (excused) {
           stPresences++;
           totalExcused++;
         } else {
@@ -266,10 +268,10 @@ export const ReportsView: React.FC = () => {
     let overallPresentCount = 0;
 
     classStudents.forEach(st => {
-      const rec = session.attendance?.[st.id];
+      const rec = getStudentAttendanceRecord(session.attendance, st);
       const isP1 = rec?.period1Status === 'present' || rec?.p1StartStatus === 'present' || rec?.p1EndStatus === 'present';
       const isP2 = rec?.period2Status === 'present' || rec?.p2StartStatus === 'present' || rec?.p2EndStatus === 'present';
-      const isOverall = rec?.status === 'present' || rec?.status === 'late' || rec?.status === 'excused' || isP1 || isP2;
+      const isOverall = isRecordPresent(rec) || isRecordLate(rec) || isRecordExcused(rec) || isP1 || isP2;
 
       if (isP1) p1Count++;
       if (isP2) p2Count++;
@@ -293,16 +295,8 @@ export const ReportsView: React.FC = () => {
         if (!matches) return false;
       }
       if (modalStatusFilter !== 'all') {
-        const rec = viewingSessionModal.attendance?.[st.id];
-        const isPresent = rec?.status === 'present' || 
-          rec?.period1Status === 'present' || 
-          rec?.period2Status === 'present' || 
-          rec?.p1StartStatus === 'present' || 
-          rec?.p1EndStatus === 'present' || 
-          rec?.p2StartStatus === 'present' || 
-          rec?.p2EndStatus === 'present' ||
-          rec?.status === 'late' ||
-          rec?.status === 'excused';
+        const rec = getStudentAttendanceRecord(viewingSessionModal.attendance, st);
+        const isPresent = isRecordPresent(rec) || isRecordLate(rec) || isRecordExcused(rec);
         if (modalStatusFilter === 'present' && !isPresent) return false;
         if (modalStatusFilter === 'absent' && isPresent) return false;
       }
@@ -320,16 +314,8 @@ export const ReportsView: React.FC = () => {
         if (!matches) return false;
       }
       if (detailStatusFilter !== 'all') {
-        const rec = activeDetailSession.attendance?.[st.id];
-        const isPresent = rec?.status === 'present' || 
-          rec?.period1Status === 'present' || 
-          rec?.period2Status === 'present' || 
-          rec?.p1StartStatus === 'present' || 
-          rec?.p1EndStatus === 'present' || 
-          rec?.p2StartStatus === 'present' || 
-          rec?.p2EndStatus === 'present' ||
-          rec?.status === 'late' ||
-          rec?.status === 'excused';
+        const rec = getStudentAttendanceRecord(activeDetailSession.attendance, st);
+        const isPresent = isRecordPresent(rec) || isRecordLate(rec) || isRecordExcused(rec);
         if (detailStatusFilter === 'present' && !isPresent) return false;
         if (detailStatusFilter === 'absent' && isPresent) return false;
       }
@@ -914,17 +900,11 @@ export const ReportsView: React.FC = () => {
                         let excused = 0;
 
                         filteredSessions.forEach(s => {
-                          const rec = s.attendance?.[st.id];
+                          const rec = getStudentAttendanceRecord(s.attendance, st);
                           if (rec) {
-                            const isPresent = rec.status === 'present' || 
-                              rec.period1Status === 'present' || 
-                              rec.period2Status === 'present' || 
-                              rec.p1StartStatus === 'present' || 
-                              rec.p1EndStatus === 'present' || 
-                              rec.p2StartStatus === 'present' || 
-                              rec.p2EndStatus === 'present';
-                            const isLate = rec.status === 'late' || rec.period1Status === 'late' || rec.period2Status === 'late';
-                            const isExcused = rec.status === 'excused' || rec.period1Status === 'excused' || rec.period2Status === 'excused';
+                            const isPresent = isRecordPresent(rec);
+                            const isLate = isRecordLate(rec);
+                            const isExcused = isRecordExcused(rec);
 
                             if (isPresent) presences++;
                             else if (isLate) { presences++; lates++; }
@@ -1026,8 +1006,8 @@ export const ReportsView: React.FC = () => {
                       {displayedStudents.map((st, idx) => {
                         let presences = 0;
                         filteredSessions.forEach(s => {
-                          const rec = s.attendance?.[st.id];
-                          if (rec?.status === 'present' || rec?.status === 'late' || rec?.status === 'excused') {
+                          const rec = getStudentAttendanceRecord(s.attendance, st);
+                          if (isRecordPresent(rec) || isRecordLate(rec) || isRecordExcused(rec)) {
                             presences++;
                           }
                         });
@@ -1048,8 +1028,8 @@ export const ReportsView: React.FC = () => {
 
                             {/* Attendance cells for each date */}
                             {filteredSessions.map((sess) => {
-                              const rec = sess.attendance?.[st.id];
-                              const status = rec?.status || 'absent';
+                              const rec = getStudentAttendanceRecord(sess.attendance, st);
+                              const status = getRecordConsolidatedStatus(rec);
                               
                               return (
                                 <td key={sess.id} className="py-2.5 px-2 text-center border-l border-slate-100">
@@ -1342,16 +1322,16 @@ export const ReportsView: React.FC = () => {
                           </tr>
                         ) : (
                           detailDisplayedStudents.map((st, idx) => {
-                            const rec = activeDetailSession.attendance?.[st.id];
+                            const rec = getStudentAttendanceRecord(activeDetailSession.attendance, st);
                             const p1Start = rec?.p1StartStatus || (rec?.period1Status === 'present' ? 'present' : 'absent');
                             const p1End = rec?.p1EndStatus || (rec?.period1Status === 'present' ? 'present' : 'absent');
                             const p2Start = rec?.p2StartStatus || (rec?.period2Status === 'present' ? 'present' : 'absent');
                             const p2End = rec?.p2EndStatus || (rec?.period2Status === 'present' ? 'present' : 'absent');
                             const isP1 = rec?.period1Status === 'present' || p1Start === 'present' || p1End === 'present';
                             const isP2 = rec?.period2Status === 'present' || p2Start === 'present' || p2End === 'present';
-                            const isLate = rec?.status === 'late' || rec?.period1Status === 'late' || rec?.period2Status === 'late';
-                            const isExcused = rec?.status === 'excused' || rec?.period1Status === 'excused' || rec?.period2Status === 'excused';
-                            const overall = rec?.status === 'present' || isP1 || isP2 ? 'present' : isLate ? 'late' : isExcused ? 'excused' : 'absent';
+                            const isLate = isRecordLate(rec);
+                            const isExcused = isRecordExcused(rec);
+                            const overall = isRecordPresent(rec) || isP1 || isP2 ? 'present' : isLate ? 'late' : isExcused ? 'excused' : 'absent';
 
                             return (
                               <tr key={st.id} className="hover:bg-slate-50/60 transition-colors">
@@ -2108,16 +2088,16 @@ export const ReportsView: React.FC = () => {
                       </tr>
                     ) : (
                       modalDisplayedStudents.map((st, idx) => {
-                        const rec = viewingSessionModal.attendance?.[st.id];
+                        const rec = getStudentAttendanceRecord(viewingSessionModal.attendance, st);
                         const p1Start = rec?.p1StartStatus || (rec?.period1Status === 'present' ? 'present' : 'absent');
                         const p1End = rec?.p1EndStatus || (rec?.period1Status === 'present' ? 'present' : 'absent');
                         const p2Start = rec?.p2StartStatus || (rec?.period2Status === 'present' ? 'present' : 'absent');
                         const p2End = rec?.p2EndStatus || (rec?.period2Status === 'present' ? 'present' : 'absent');
                         const isP1 = rec?.period1Status === 'present' || p1Start === 'present' || p1End === 'present';
                         const isP2 = rec?.period2Status === 'present' || p2Start === 'present' || p2End === 'present';
-                        const isLate = rec?.status === 'late' || rec?.period1Status === 'late' || rec?.period2Status === 'late';
-                        const isExcused = rec?.status === 'excused' || rec?.period1Status === 'excused' || rec?.period2Status === 'excused';
-                        const overall = rec?.status === 'present' || isP1 || isP2 ? 'present' : isLate ? 'late' : isExcused ? 'excused' : 'absent';
+                        const isLate = isRecordLate(rec);
+                        const isExcused = isRecordExcused(rec);
+                        const overall = isRecordPresent(rec) || isP1 || isP2 ? 'present' : isLate ? 'late' : isExcused ? 'excused' : 'absent';
 
                         return (
                           <tr key={st.id} className="hover:bg-slate-50 transition-colors">

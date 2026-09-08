@@ -1,5 +1,11 @@
 import ExcelJS from 'exceljs';
 import { ClassGroup, Student, LabSession, Professor } from '../types';
+import { 
+  getStudentAttendanceRecord, 
+  isRecordPresent, 
+  isRecordLate, 
+  isRecordExcused 
+} from './attendanceHelpers';
 
 interface ExportAttendanceOptions {
   selectedClass: ClassGroup;
@@ -163,17 +169,11 @@ export async function exportModernAttendanceExcel({
     let excusedCount = 0;
 
     sessions.forEach(sess => {
-      const rec = sess.attendance?.[st.id];
+      const rec = getStudentAttendanceRecord(sess.attendance, st);
       if (rec) {
-        const isPresent = rec.status === 'present' || 
-          rec.period1Status === 'present' || 
-          rec.period2Status === 'present' || 
-          rec.p1StartStatus === 'present' || 
-          rec.p1EndStatus === 'present' || 
-          rec.p2StartStatus === 'present' || 
-          rec.p2EndStatus === 'present';
-        const isLate = rec.status === 'late' || rec.period1Status === 'late' || rec.period2Status === 'late';
-        const isExcused = rec.status === 'excused' || rec.period1Status === 'excused' || rec.period2Status === 'excused';
+        const isPresent = isRecordPresent(rec);
+        const isLate = isRecordLate(rec);
+        const isExcused = isRecordExcused(rec);
 
         if (isPresent) {
           presencesCount++;
@@ -313,16 +313,10 @@ export async function exportModernAttendanceExcel({
       : '07:30 às 12:00';
 
     students.forEach((st, idx) => {
-      const rec = sess.attendance?.[st.id];
-      const isPresent = rec?.status === 'present' || 
-        rec?.period1Status === 'present' || 
-        rec?.period2Status === 'present' || 
-        rec?.p1StartStatus === 'present' || 
-        rec?.p1EndStatus === 'present' || 
-        rec?.p2StartStatus === 'present' || 
-        rec?.p2EndStatus === 'present';
-      const isLate = rec?.status === 'late' || rec?.period1Status === 'late' || rec?.period2Status === 'late';
-      const isExcused = rec?.status === 'excused' || rec?.period1Status === 'excused' || rec?.period2Status === 'excused';
+      const rec = getStudentAttendanceRecord(sess.attendance, st);
+      const isPresent = isRecordPresent(rec);
+      const isLate = isRecordLate(rec);
+      const isExcused = isRecordExcused(rec);
 
       const isP1 = rec?.period1Status === 'present' || rec?.p1StartStatus === 'present' || rec?.p1EndStatus === 'present';
       const isP2 = rec?.period2Status === 'present' || rec?.p2StartStatus === 'present' || rec?.p2EndStatus === 'present';

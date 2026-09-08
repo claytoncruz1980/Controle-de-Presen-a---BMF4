@@ -20,6 +20,7 @@ import { SecureStudentPortal } from './components/SecureStudentPortal';
 import { ProfessorLoginModal } from './components/ProfessorLoginModal';
 import { AuthGateScreen } from './components/AuthGateScreen';
 import { FirstAccessPinModal } from './components/FirstAccessPinModal';
+import { ClassPeriod } from './types';
 import { Tv, Sparkles, UserCheck, LayoutGrid, Users, GraduationCap, FileSpreadsheet, Settings, Award, FileCheck } from 'lucide-react';
 
 function MainApp() {
@@ -29,6 +30,7 @@ function MainApp() {
   const [isFullRosterOpen, setIsFullRosterOpen] = useState(false);
   const [isScannerOpen, setIsScannerOpen] = useState(false);
   const [isProjectionOpen, setIsProjectionOpen] = useState(false);
+  const [projectionPeriod, setProjectionPeriod] = useState<ClassPeriod | undefined>(undefined);
   const [isQuickPickerOpen, setIsQuickPickerOpen] = useState(false);
   const [isNewSessionOpen, setIsNewSessionOpen] = useState(false);
   const [isStudentCheckinOpen, setIsStudentCheckinOpen] = useState(false);
@@ -227,12 +229,14 @@ function MainApp() {
     return (
       <LabProjectionScreen 
         isStandalonePortal={isProjectionPortal}
+        initialPeriod={projectionPeriod}
         onExitAndClose={() => {
           if (isProjectionPortal) {
             window.history.replaceState({}, '', window.location.pathname);
             setIsProjectionPortal(false);
           }
           setIsProjectionOpen(false);
+          setProjectionPeriod(undefined);
           setActiveTab('chamada');
           // Strict classroom security: always lock session so PC/TV does not stay logged in
           logoutProfessor();
@@ -308,7 +312,10 @@ function MainApp() {
           <LovableDashboard
             onOpenFullRoster={() => setIsFullRosterOpen(true)}
             onOpenFullRosterModal={() => setIsFullRosterOpen(true)}
-            onOpenProjectionScreen={() => setIsProjectionOpen(true)}
+            onOpenProjectionScreen={(period) => {
+              if (period) setProjectionPeriod(period);
+              setIsProjectionOpen(true);
+            }}
             onOpenScanner={() => setIsScannerOpen(true)}
             onOpenQuickPicker={() => setIsQuickPickerOpen(true)}
             onOpenNewSession={() => setIsNewSessionOpen(true)}
