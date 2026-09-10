@@ -314,12 +314,12 @@ export const Navbar: React.FC<NavbarProps> = ({
                   setSelectedClassId(e.target.value);
                   playBeep('confirm');
                 }}
-                className="bg-transparent text-white font-bold text-xs focus:outline-none cursor-pointer appearance-none pr-5 leading-tight truncate max-w-[140px] lg:max-w-[200px]"
+                className="bg-transparent text-white font-bold text-xs focus:outline-none cursor-pointer appearance-none pr-5 leading-tight truncate max-w-[180px] lg:max-w-[260px]"
                 title="Selecionar Turma Ativa"
               >
                 {classes.map(cls => (
                   <option key={cls.id} value={cls.id} className="bg-slate-900 text-white font-bold text-xs">
-                    {cls.name} • {cls.semester}
+                    {cls.name}
                   </option>
                 ))}
               </select>
@@ -407,7 +407,7 @@ export const Navbar: React.FC<NavbarProps> = ({
           )}
 
           {/* Turma Selector (Compact Dropdown Menu on Mobile) */}
-          <div className="flex items-center gap-1 bg-slate-800/95 border border-slate-700/80 rounded-lg px-1.5 py-0.5 flex-1 min-w-0 max-w-[140px] shadow-2xs">
+          <div className="flex items-center gap-1 bg-slate-800/95 border border-slate-700/80 rounded-lg px-1.5 py-0.5 flex-1 min-w-0 max-w-[180px] shadow-2xs">
             <GraduationCap className="w-3 h-3 text-teal-400 shrink-0" />
             <select
               id="select-class-mobile-header"
@@ -421,7 +421,7 @@ export const Navbar: React.FC<NavbarProps> = ({
             >
               {classes.map(cls => (
                 <option key={cls.id} value={cls.id} className="bg-slate-900 text-white text-xs">
-                  {cls.name} • {cls.semester}
+                  {cls.name}
                 </option>
               ))}
             </select>

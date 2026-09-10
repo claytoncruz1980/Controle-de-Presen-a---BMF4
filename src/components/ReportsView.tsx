@@ -36,7 +36,7 @@ import {
   FolderOpen
 } from 'lucide-react';
 import { useLab } from '../context/LabContext';
-import { ActivityType, ActivityCategory, LabSession, Student } from '../types';
+import { ActivityType, ActivityCategory, LabSession, Student, getActivityTypeLabel } from '../types';
 import { exportModernAttendanceExcel } from '../utils/exportExcel';
 import { 
   getStudentAttendanceRecord, 
@@ -1101,7 +1101,7 @@ export const ReportsView: React.FC = () => {
                 >
                   {classSessions.map(s => (
                     <option key={s.id} value={s.id}>
-                      {formatDateDisplay(s.date)} [{getSessionTimeShort(s)}] — {s.topic} {s.labLocation ? `[${s.labLocation === 'anatomia' ? 'Lab. Anatomia' : 'Lab. Histologia'}]` : ''} ({s.activityCategory === 'atividade' || s.activityType?.startsWith('atividade') ? 'Atividade' : 'Aula Teórica/Prática'})
+                      {formatDateDisplay(s.date)} [{getSessionTimeShort(s)}] — {s.topic} {s.labLocation ? `[${s.labLocation === 'anatomia' ? 'Lab. Anatomia' : s.labLocation === 'histologia' ? 'Lab. Histologia' : 'Anato/Histo'}]` : ''} ({s.activityCategory === 'atividade' || s.activityType?.startsWith('atividade') ? (s.activityType ? getActivityTypeLabel(s.activityType) : 'Atividade') : 'Aula Teórica/Prática'})
                     </option>
                   ))}
                 </select>
@@ -1120,9 +1120,11 @@ export const ReportsView: React.FC = () => {
                     <span className={`px-3 py-1.5 rounded-xl text-xs font-extrabold border ${
                       activeDetailSession.labLocation === 'anatomia'
                         ? 'bg-amber-100 text-amber-900 border-amber-300'
-                        : 'bg-indigo-100 text-indigo-900 border-indigo-300'
+                        : activeDetailSession.labLocation === 'histologia'
+                        ? 'bg-indigo-100 text-indigo-900 border-indigo-300'
+                        : 'bg-emerald-100 text-emerald-900 border-emerald-300'
                     }`}>
-                      {activeDetailSession.labLocation === 'anatomia' ? '🫀 Lab. de Anatomia' : '🔬 Lab. de Histologia'}
+                      {activeDetailSession.labLocation === 'anatomia' ? '🫀 Lab. de Anatomia' : activeDetailSession.labLocation === 'histologia' ? '🔬 Lab. de Histologia' : '🫀🔬 Anato/Histo'}
                     </span>
                   )}
                   <span className={`px-3 py-1.5 rounded-xl text-xs font-bold ${
@@ -1131,7 +1133,7 @@ export const ReportsView: React.FC = () => {
                       : 'bg-emerald-100 text-emerald-800 border border-emerald-300'
                   }`}>
                     {activeDetailSession.activityCategory === 'atividade' || activeDetailSession.activityType?.startsWith('atividade')
-                      ? 'Atividade (Chamada Única)'
+                      ? (activeDetailSession.activityType ? `${getActivityTypeLabel(activeDetailSession.activityType)} (Chamada Única)` : 'Atividade (Chamada Única)')
                       : 'Aula Teórica / Prática (1ª e 2ª Aulas)'}
                   </span>
 
@@ -1588,9 +1590,11 @@ export const ReportsView: React.FC = () => {
                               <span className={`px-2 py-0.5 rounded-md text-[10px] font-bold border ${
                                 session.labLocation === 'anatomia'
                                   ? 'bg-amber-50 text-amber-900 border-amber-200'
-                                  : 'bg-indigo-50 text-indigo-900 border-indigo-200'
+                                  : session.labLocation === 'histologia'
+                                  ? 'bg-indigo-50 text-indigo-900 border-indigo-200'
+                                  : 'bg-emerald-50 text-emerald-900 border-emerald-200'
                               }`}>
-                                {session.labLocation === 'anatomia' ? '🫀 Anatomia' : '🔬 Histologia'}
+                                {session.labLocation === 'anatomia' ? '🫀 Anatomia' : session.labLocation === 'histologia' ? '🔬 Histologia' : '🫀🔬 Anato/Histo'}
                               </span>
                             )}
                             {session.activityCategory && (
@@ -1896,9 +1900,11 @@ export const ReportsView: React.FC = () => {
                       <span className={`px-2.5 py-0.5 rounded-md text-[10px] font-bold border ${
                         viewingSessionModal.labLocation === 'anatomia'
                           ? 'bg-amber-100 text-amber-900 border-amber-300'
-                          : 'bg-indigo-100 text-indigo-900 border-indigo-300'
+                          : viewingSessionModal.labLocation === 'histologia'
+                          ? 'bg-indigo-100 text-indigo-900 border-indigo-300'
+                          : 'bg-emerald-100 text-emerald-900 border-emerald-300'
                       }`}>
-                        {viewingSessionModal.labLocation === 'anatomia' ? '🫀 Lab. de Anatomia' : '🔬 Lab. de Histologia'}
+                        {viewingSessionModal.labLocation === 'anatomia' ? '🫀 Lab. de Anatomia' : viewingSessionModal.labLocation === 'histologia' ? '🔬 Lab. de Histologia' : '🫀🔬 Anato/Histo'}
                       </span>
                     )}
                     {viewingSessionModal.isLocked ? (

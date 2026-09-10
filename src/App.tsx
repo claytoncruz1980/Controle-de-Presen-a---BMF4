@@ -20,11 +20,11 @@ import { SecureStudentPortal } from './components/SecureStudentPortal';
 import { ProfessorLoginModal } from './components/ProfessorLoginModal';
 import { AuthGateScreen } from './components/AuthGateScreen';
 import { FirstAccessPinModal } from './components/FirstAccessPinModal';
-import { ClassPeriod } from './types';
-import { Tv, Sparkles, UserCheck, LayoutGrid, Users, GraduationCap, FileSpreadsheet, Settings, Award, FileCheck } from 'lucide-react';
+import { ClassPeriod, getActivityTypeLabel } from './types';
+import { Tv, Sparkles, UserCheck, LayoutGrid, Users, GraduationCap, FileSpreadsheet, Settings, Award, FileCheck, X, Layers, CheckCircle2 } from 'lucide-react';
 
 function MainApp() {
-  const { activeProfessor, logoutProfessor } = useLab();
+  const { activeProfessor, logoutProfessor, activeSession, selectedClassId, classes } = useLab();
   const [activeTab, setActiveTab] = useState<ActiveTab>('chamada');
   const [academicSubTab, setAcademicSubTab] = useState<'alunos' | 'docentes' | 'turmas' | 'justificativas' | 'ajustes'>('alunos');
   const [isFullRosterOpen, setIsFullRosterOpen] = useState(false);
@@ -33,9 +33,43 @@ function MainApp() {
   const [projectionPeriod, setProjectionPeriod] = useState<ClassPeriod | undefined>(undefined);
   const [isQuickPickerOpen, setIsQuickPickerOpen] = useState(false);
   const [isNewSessionOpen, setIsNewSessionOpen] = useState(false);
+  const [isTelaoConfigModalOpen, setIsTelaoConfigModalOpen] = useState(false);
+  const [isTelaoActivePromptOpen, setIsTelaoActivePromptOpen] = useState(false);
   const [isStudentCheckinOpen, setIsStudentCheckinOpen] = useState(false);
   const [isProfessorLoginOpen, setIsProfessorLoginOpen] = useState(false);
   const [isFirstAccessModalOpen, setIsFirstAccessModalOpen] = useState(false);
+
+  const isDateToday = (dateStr?: string): boolean => {
+    if (!dateStr) return false;
+    const today = new Date().toISOString().split('T')[0];
+    return dateStr.startsWith(today);
+  };
+
+  const hasLiveSessionToday = Boolean(
+    activeSession && 
+    activeSession.classGroupId === selectedClassId && 
+    activeSession.isLive && 
+    !activeSession.isLocked &&
+    isDateToday(activeSession.date)
+  );
+
+  const handleOpenTelao = (period?: ClassPeriod) => {
+    if (period) setProjectionPeriod(period);
+
+    if (hasLiveSessionToday) {
+      setIsTelaoActivePromptOpen(true);
+    } else {
+      setIsTelaoConfigModalOpen(true);
+    }
+  };
+
+  const handleTabChange = (tab: ActiveTab) => {
+    if (tab === 'telao') {
+      handleOpenTelao();
+    } else {
+      setActiveTab(tab);
+    }
+  };
 
   // Helper to extract parameters from either window.location.search or window.location.hash
   const getParam = (key: string): string => {
@@ -225,7 +259,7 @@ function MainApp() {
 
   // Dedicated Fullscreen Projection View (Telão de Laboratório / Smart TV / Chromecast)
   // When accessed via direct portal link (email, whatsapp, chromecast), opens ONLY the QR code screen and not the app
-  if (isProjectionPortal || isProjectionOpen || activeTab === 'telao') {
+  if (isProjectionPortal || isProjectionOpen) {
     return (
       <LabProjectionScreen 
         isStandalonePortal={isProjectionPortal}
@@ -249,7 +283,7 @@ function MainApp() {
   if (!activeProfessor) {
     return (
       <AuthGateScreen
-        onOpenProjectionScreen={() => setIsProjectionPortal(true)}
+        onOpenProjectionScreen={() => handleOpenTelao()}
       />
     );
   }
@@ -260,7 +294,7 @@ function MainApp() {
       {/* Universal Top Header with "Controle de presença BMF4", Clock, Date, Online status */}
       <Navbar
         activeTab={activeTab}
-        setActiveTab={setActiveTab}
+        setActiveTab={handleTabChange}
         onOpenCheckinModal={() => setIsStudentCheckinOpen(true)}
         onOpenNewSessionModal={() => setIsNewSessionOpen(true)}
         onOpenQuickPickerModal={() => setIsQuickPickerOpen(true)}
@@ -312,16 +346,13 @@ function MainApp() {
           <LovableDashboard
             onOpenFullRoster={() => setIsFullRosterOpen(true)}
             onOpenFullRosterModal={() => setIsFullRosterOpen(true)}
-            onOpenProjectionScreen={(period) => {
-              if (period) setProjectionPeriod(period);
-              setIsProjectionOpen(true);
-            }}
+            onOpenProjectionScreen={handleOpenTelao}
             onOpenScanner={() => setIsScannerOpen(true)}
             onOpenQuickPicker={() => setIsQuickPickerOpen(true)}
             onOpenNewSession={() => setIsNewSessionOpen(true)}
             onOpenStudentCheckInModal={() => setIsStudentCheckinOpen(true)}
             onOpenProfessorLogin={() => setIsProfessorLoginOpen(true)}
-            onNavigateToTab={(tab) => setActiveTab(tab as any)}
+            onNavigateToTab={handleTabChange}
           />
         )}
 
@@ -440,7 +471,7 @@ function MainApp() {
       {/* Bottom Navigation Dock */}
       <BottomNavigation
         activeTab={activeTab}
-        setActiveTab={setActiveTab}
+        setActiveTab={handleTabChange}
       />
 
       {/* Modals */}
@@ -459,6 +490,7 @@ function MainApp() {
         onClose={() => setIsQuickPickerOpen(false)}
       />
 
+      {/* Regular New Session Modal */}
       <NewSessionModal
         isOpen={isNewSessionOpen}
         onClose={() => setIsNewSessionOpen(false)}
@@ -467,6 +499,113 @@ function MainApp() {
           setIsNewSessionOpen(false);
         }}
       />
+
+      {/* Telão Lesson Type Identification Modal */}
+      <NewSessionModal
+        isOpen={isTelaoConfigModalOpen}
+        onClose={() => setIsTelaoConfigModalOpen(false)}
+        isTelaoIntent={true}
+        onSessionStarted={() => {
+          setIsTelaoConfigModalOpen(false);
+          setIsProjectionOpen(true);
+        }}
+      />
+
+      {/* Telão Confirmation Prompt when an active live session already exists */}
+      {isTelaoActivePromptOpen && activeSession && (
+        <div className="fixed inset-0 z-50 bg-slate-950/75 backdrop-blur-xs flex items-center justify-center p-4 animate-in fade-in">
+          <div className="bg-slate-900 border border-slate-700 rounded-3xl shadow-2xl max-w-md w-full p-6 text-white space-y-5 animate-in zoom-in-95">
+            <div className="flex items-start justify-between gap-3 border-b border-slate-800 pb-4">
+              <div className="flex items-center gap-3">
+                <div className="w-10 h-10 rounded-2xl bg-teal-500/20 border border-teal-500/40 text-teal-300 flex items-center justify-center shrink-0 shadow-inner">
+                  <Tv className="w-5 h-5" />
+                </div>
+                <div>
+                  <h3 className="font-black text-base text-white">Modo Telão • Chamada Ativa</h3>
+                  <p className="text-xs text-slate-400">Verifique os dados da aula antes de projetar</p>
+                </div>
+              </div>
+              <button 
+                onClick={() => setIsTelaoActivePromptOpen(false)}
+                className="p-1 rounded-lg text-slate-400 hover:text-white hover:bg-slate-800 cursor-pointer"
+              >
+                <X className="w-4 h-4" />
+              </button>
+            </div>
+
+            <div className="bg-slate-800/80 rounded-2xl p-4 border border-slate-700 space-y-2.5">
+              <div className="flex items-center justify-between">
+                <span className="text-xs text-slate-400 font-medium">Turma:</span>
+                <span className="text-xs font-bold text-teal-300">
+                  {classes.find(c => c.id === activeSession.classGroupId)?.name || 'Turma Selecionada'}
+                </span>
+              </div>
+              <div className="flex items-center justify-between">
+                <span className="text-xs text-slate-400 font-medium">Tipo de Aula:</span>
+                <span className="text-xs font-bold text-white px-2.5 py-0.5 rounded-full bg-teal-500/20 border border-teal-500/40">
+                  {getActivityTypeLabel(activeSession.activityType)}
+                </span>
+              </div>
+              <div className="flex items-start justify-between gap-2">
+                <span className="text-xs text-slate-400 font-medium shrink-0">Tema da Aula:</span>
+                <span className="text-xs font-bold text-slate-200 text-right">
+                  {activeSession.topic || 'Aula BMF4'}
+                </span>
+              </div>
+              <div className="flex items-center justify-between">
+                <span className="text-xs text-slate-400 font-medium">Docente:</span>
+                <span className="text-xs font-semibold text-slate-300">
+                  {activeSession.professorName || 'Docente Responsável'}
+                </span>
+              </div>
+              {activeSession.labLocation && (
+                <div className="flex items-center justify-between">
+                  <span className="text-xs text-slate-400 font-medium">Laboratório:</span>
+                  <span className="text-xs font-semibold text-amber-300">
+                    {activeSession.labLocation === 'anatomia' ? '🫀 Lab. Anatomia' : activeSession.labLocation === 'histologia' ? '🔬 Lab. Histologia' : '🫀🔬 Anato/Histo'}
+                  </span>
+                </div>
+              )}
+            </div>
+
+            <div className="space-y-2.5 pt-1">
+              <button
+                id="btn-telao-project-existing"
+                type="button"
+                onClick={() => {
+                  setIsTelaoActivePromptOpen(false);
+                  setIsProjectionOpen(true);
+                }}
+                className="w-full py-3 px-4 rounded-xl bg-teal-600 hover:bg-teal-500 text-white font-bold text-xs flex items-center justify-center gap-2 shadow-lg cursor-pointer transition-all active:scale-98"
+              >
+                <Tv className="w-4 h-4 text-teal-200" />
+                <span>Projetar Esta Aula no Telão</span>
+              </button>
+
+              <button
+                id="btn-telao-start-different-type"
+                type="button"
+                onClick={() => {
+                  setIsTelaoActivePromptOpen(false);
+                  setIsTelaoConfigModalOpen(true);
+                }}
+                className="w-full py-2.5 px-4 rounded-xl bg-slate-800 hover:bg-slate-700 text-slate-200 hover:text-white border border-slate-700 font-bold text-xs flex items-center justify-center gap-2 cursor-pointer transition-all"
+              >
+                <Layers className="w-4 h-4 text-teal-400" />
+                <span>Iniciar Outra Aula com Novo Tipo</span>
+              </button>
+
+              <button
+                type="button"
+                onClick={() => setIsTelaoActivePromptOpen(false)}
+                className="w-full py-2 text-center text-xs text-slate-400 hover:text-slate-300 cursor-pointer"
+              >
+                Cancelar
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
 
       <StudentCheckInModal
         isOpen={isStudentCheckinOpen}

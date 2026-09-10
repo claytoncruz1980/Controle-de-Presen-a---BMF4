@@ -1,6 +1,6 @@
 {
-  "name": "Controle de Presença - BMF3",
-  "description": "A streamlined React and TypeScript application for managing student roll calls and presence in anatomy laboratory sessions.",
+  "name": "Controle de presença BMF4",
+  "description": "Sistema de Chamada, Frequência, Bancadas, Notas e Telão para Bases Morfofuncionais 4 (Medicina).",
   "requestFramePermissions": [
     "camera",
     "geolocation"

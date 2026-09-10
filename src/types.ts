@@ -24,17 +24,17 @@ export type CourseType = 'Medicina' | 'Enfermagem' | 'Odontologia' | 'Fisioterap
 
 export type ActivityCategory = 'teorica' | 'pratica';
 
-export type LaboratoryLocation = 'anatomia' | 'histologia';
+export type LaboratoryLocation = 'anatomia' | 'histologia' | 'ambos';
 
 export type ActivityType = 
   | 'aula_teorica'           // Aula Teórica (Chamada Início/Fim na 1ª e 2ª aula)
   | 'prova_teorica'          // Prova Teórica (Chamada única)
   | 'aula_pratica'           // Aula Prática (Chamada Início/Fim na 1ª e 2ª aula)
-  | 'atividade_pratica_1'    // Atividade Prática 1 (Chamada única)
-  | 'atividade_pratica_2'    // Atividade Prática 2 (Chamada única)
-  | 'atividade_pratica_3'    // Atividade Prática 3 (Chamada única)
-  | 'atividade_pratica_4'    // Atividade Prática 4 (Chamada única)
-  | 'atividade_pratica_5';   // Atividade Prática 5 (Chamada única)
+  | 'atividade_pratica_1'    // Anato/Histo 1 (Chamada única)
+  | 'atividade_pratica_2'    // Anato/Histo 2 (Chamada única)
+  | 'atividade_pratica_3'    // Anato/Histo 3 (Chamada única)
+  | 'atividade_pratica_4'    // Anato/Histo 4 (Chamada única)
+  | 'atividade_pratica_5';   // Anato/Histo 5 (Chamada única)
 
 export type CheckpointPhase = 
   | 'p1_start'          // 1ª Aula - Início (Começo)
@@ -333,4 +333,18 @@ export interface AttendanceOutboxItem {
   lastError?: string;
   payload?: any;
 }
+
+export const getActivityTypeLabel = (type?: string): string => {
+  switch (type) {
+    case 'aula_teorica': return 'Aula Teórica';
+    case 'prova_teorica': return 'Prova Teórica';
+    case 'aula_pratica': return 'Aula Prática';
+    case 'atividade_pratica_1': return 'Anato/Histo 1';
+    case 'atividade_pratica_2': return 'Anato/Histo 2';
+    case 'atividade_pratica_3': return 'Anato/Histo 3';
+    case 'atividade_pratica_4': return 'Anato/Histo 4';
+    case 'atividade_pratica_5': return 'Anato/Histo 5';
+    default: return 'Aula Regular';
+  }
+};
 

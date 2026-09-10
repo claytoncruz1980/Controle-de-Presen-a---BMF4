@@ -16,7 +16,8 @@ import {
   AlertTriangle,
   CheckCircle2,
   Building2,
-  Microscope
+  Microscope,
+  Tv
 } from 'lucide-react';
 import { useLab, sortClassesAlphabetically } from '../context/LabContext';
 import { ActivityCategory, ActivityType, ClassPeriod, LaboratoryLocation } from '../types';
@@ -25,6 +26,7 @@ interface NewSessionModalProps {
   isOpen: boolean;
   onClose: () => void;
   onSessionStarted?: () => void;
+  isTelaoIntent?: boolean;
 }
 
 const DEFAULT_LESSON_TITLES = [
@@ -42,11 +44,11 @@ const DEFAULT_LESSON_TITLES = [
   'Aula Teórica BMF4: Fisiologia & Morfologia Integrada',
   'Aula Teórica BMF4: Sistema Cardiovascular e Respiratório',
   'Avaliação Teórica Oficial BMF4 (N1/N2)',
-  'Atividade Prática 1: Sistema Cardiovascular & Mediastino',
-  'Atividade Prática 2: Sistema Respiratório & Caixa Torácica',
-  'Atividade Prática 3: Sistema Digestório & Parede Abdominal',
-  'Atividade Prática 4: Sistema Renal, Urinário & Pelve',
-  'Atividade Prática 5: Sistema Nervoso Central & Periférico',
+  'Anato/Histo 1: Sistema Cardiovascular & Mediastino',
+  'Anato/Histo 2: Sistema Respiratório & Caixa Torácica',
+  'Anato/Histo 3: Sistema Digestório & Parede Abdominal',
+  'Anato/Histo 4: Sistema Renal, Urinário & Pelve',
+  'Anato/Histo 5: Sistema Nervoso Central & Periférico',
   'Revisão e Prática Livre de Peças Anatômicas em Bancadas',
   'Revisão Prática de Lâminas e Microscópios no Lab. de Histologia'
 ];
@@ -54,7 +56,8 @@ const DEFAULT_LESSON_TITLES = [
 export const NewSessionModal: React.FC<NewSessionModalProps> = ({ 
   isOpen, 
   onClose,
-  onSessionStarted
+  onSessionStarted,
+  isTelaoIntent = false
 }) => {
   const { 
     classes, 
@@ -210,16 +213,26 @@ export const NewSessionModal: React.FC<NewSessionModalProps> = ({
         {/* Header */}
         <div className="flex items-center justify-between border-b border-slate-100 pb-3">
           <div className="flex items-center gap-2.5">
-            <div className="w-9 h-9 rounded-xl bg-gradient-to-tr from-sky-600 to-teal-600 text-white flex items-center justify-center shadow-xs">
-              <PlusCircle className="w-5 h-5" />
+            <div className={`w-9 h-9 rounded-xl ${
+              isTelaoIntent 
+                ? 'bg-gradient-to-tr from-teal-600 to-emerald-600' 
+                : 'bg-gradient-to-tr from-sky-600 to-teal-600'
+            } text-white flex items-center justify-center shadow-xs`}>
+              {isTelaoIntent ? <Tv className="w-5 h-5" /> : <PlusCircle className="w-5 h-5" />}
             </div>
             <div>
-              <h3 className="font-bold text-slate-900 text-base">Iniciar Nova Chamada BMF4</h3>
-              <p className="text-[11px] text-slate-500">Defina o Professor, Turma e Tipo de Atividade</p>
+              <h3 className="font-bold text-slate-900 text-base">
+                {isTelaoIntent ? 'Identificar Tipo de Aula para o Telão' : 'Iniciar Nova Chamada BMF4'}
+              </h3>
+              <p className="text-[11px] text-slate-500">
+                {isTelaoIntent 
+                  ? 'Defina o Tipo de Aula e Tema antes de projetar o QR Code' 
+                  : 'Defina o Professor, Turma e Tipo de Atividade'}
+              </p>
             </div>
           </div>
 
-          <button onClick={onClose} className="p-1 text-slate-400 hover:text-slate-600 rounded-lg">
+          <button onClick={onClose} className="p-1 text-slate-400 hover:text-slate-600 rounded-lg cursor-pointer">
             <X className="w-5 h-5" />
           </button>
         </div>
@@ -364,14 +377,14 @@ export const NewSessionModal: React.FC<NewSessionModalProps> = ({
                       key={act}
                       type="button"
                       onClick={() => handleActivityTypeChange(act)}
-                      className={`p-2 rounded-xl border text-center transition-all ${
+                      className={`p-2.5 rounded-xl border text-center transition-all cursor-pointer ${
                         activityType === act
                           ? 'border-teal-500 bg-teal-50/80 text-teal-950 font-bold shadow-xs ring-1 ring-teal-400'
                           : 'border-slate-200 bg-white hover:bg-slate-50 text-slate-700'
                       }`}
                     >
-                      <p className="font-bold text-[11px]">Atividade Prática {i + 1}</p>
-                      <p className="text-[9px] text-slate-500">Semestral</p>
+                      <p className="font-bold text-xs text-teal-950">Anato/Histo {i + 1}</p>
+                      <p className="text-[9px] text-slate-500 font-medium">Atividade Prática {i + 1}</p>
                     </button>
                   ))}
                 </div>
@@ -389,13 +402,15 @@ export const NewSessionModal: React.FC<NewSessionModalProps> = ({
                   <span className={`text-[10px] px-2 py-0.5 rounded-full font-extrabold ${
                     labLocation === 'anatomia'
                       ? 'bg-amber-100 text-amber-900 border border-amber-300'
-                      : 'bg-indigo-100 text-indigo-900 border border-indigo-300'
+                      : labLocation === 'histologia'
+                      ? 'bg-indigo-100 text-indigo-900 border border-indigo-300'
+                      : 'bg-emerald-100 text-emerald-900 border border-emerald-300'
                   }`}>
-                    {labLocation === 'anatomia' ? '🫀 Lab. de Anatomia' : '🔬 Lab. de Histologia'}
+                    {labLocation === 'anatomia' ? '🫀 Lab. de Anatomia' : labLocation === 'histologia' ? '🔬 Lab. de Histologia' : '🫀🔬 Anato / Histo (Ambos)'}
                   </span>
                 </label>
 
-                <div className="grid grid-cols-1 sm:grid-cols-2 gap-2">
+                <div className="grid grid-cols-1 sm:grid-cols-3 gap-2">
                   <button
                     type="button"
                     id="btn-modal-lab-anatomia"
@@ -409,8 +424,8 @@ export const NewSessionModal: React.FC<NewSessionModalProps> = ({
                     <div className="flex items-start gap-2">
                       <span className="text-xl shrink-0">🫀</span>
                       <div>
-                        <p className="font-extrabold text-xs text-slate-900">Lab. de Anatomia</p>
-                        <p className="text-[10px] text-slate-500 font-medium leading-tight mt-0.5">Peças anatômicas reais, bancadas & dissecação</p>
+                        <p className="font-extrabold text-xs text-slate-900">Lab. Anatomia</p>
+                        <p className="text-[10px] text-slate-500 font-medium leading-tight mt-0.5">Bancadas & peças</p>
                       </div>
                     </div>
                   </button>
@@ -428,8 +443,27 @@ export const NewSessionModal: React.FC<NewSessionModalProps> = ({
                     <div className="flex items-start gap-2">
                       <span className="text-xl shrink-0">🔬</span>
                       <div>
-                        <p className="font-extrabold text-xs text-slate-900">Lab. de Histologia</p>
-                        <p className="text-[10px] text-slate-500 font-medium leading-tight mt-0.5">Microscópios, lâminas histológicas & tecidos</p>
+                        <p className="font-extrabold text-xs text-slate-900">Lab. Histologia</p>
+                        <p className="text-[10px] text-slate-500 font-medium leading-tight mt-0.5">Microscópios & lâminas</p>
+                      </div>
+                    </div>
+                  </button>
+
+                  <button
+                    type="button"
+                    id="btn-modal-lab-ambos"
+                    onClick={() => setLabLocation('ambos')}
+                    className={`p-2.5 rounded-xl border text-left transition-all cursor-pointer ${
+                      labLocation === 'ambos'
+                        ? 'border-emerald-500 bg-white text-slate-900 font-bold shadow-xs ring-2 ring-emerald-400/50'
+                        : 'border-slate-200 bg-white/70 hover:bg-white text-slate-700'
+                    }`}
+                  >
+                    <div className="flex items-start gap-2">
+                      <span className="text-xl shrink-0">🫀🔬</span>
+                      <div>
+                        <p className="font-extrabold text-xs text-slate-900">Anato / Histo</p>
+                        <p className="text-[10px] text-slate-500 font-medium leading-tight mt-0.5">Integrado nos 2 labs</p>
                       </div>
                     </div>
                   </button>
@@ -448,7 +482,7 @@ export const NewSessionModal: React.FC<NewSessionModalProps> = ({
               {activityType.startsWith('atividade_pratica') || activityType === 'prova_teorica' ? (
                 <div className="px-3 py-2 bg-teal-50 border border-teal-200 rounded-xl text-teal-900 font-bold text-xs flex items-center gap-1.5">
                   <CheckCircle2 className="w-4 h-4 text-teal-600 shrink-0" />
-                  <span>Chamada Integral (Atividade Prática)</span>
+                  <span>Chamada Integral ({activityType.startsWith('atividade_pratica') ? 'Anato/Histo' : 'Prova Teórica'})</span>
                 </div>
               ) : (
                 <select
@@ -637,15 +671,21 @@ export const NewSessionModal: React.FC<NewSessionModalProps> = ({
             <button
               type="button"
               onClick={onClose}
-              className="px-4 py-2 rounded-xl text-xs font-bold text-slate-600 hover:bg-slate-100 transition-colors"
+              className="px-4 py-2 rounded-xl text-xs font-bold text-slate-600 hover:bg-slate-100 transition-colors cursor-pointer"
             >
               Cancelar
             </button>
             <button
+              id="btn-submit-new-session"
               type="submit"
-              className="px-5 py-2 rounded-xl text-xs font-bold text-white bg-gradient-to-r from-sky-600 to-teal-600 hover:from-sky-700 hover:to-teal-700 shadow-xs transition-all cursor-pointer"
+              className={`px-5 py-2.5 rounded-xl text-xs font-bold text-white shadow-xs transition-all cursor-pointer flex items-center gap-2 ${
+                isTelaoIntent
+                  ? 'bg-gradient-to-r from-teal-600 to-emerald-600 hover:from-teal-700 hover:to-emerald-700 active:scale-95'
+                  : 'bg-gradient-to-r from-sky-600 to-teal-600 hover:from-sky-700 hover:to-teal-700'
+              }`}
             >
-              Abrir Chamada Agora
+              {isTelaoIntent && <Tv className="w-4 h-4 text-teal-200" />}
+              <span>{isTelaoIntent ? 'Iniciar Chamada e Abrir Telão' : 'Abrir Chamada Agora'}</span>
             </button>
           </div>
         </form>

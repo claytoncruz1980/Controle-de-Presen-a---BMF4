@@ -41,7 +41,7 @@ import {
   Info
 } from 'lucide-react';
 import { useLab, isDateToday } from '../context/LabContext';
-import { ClassPeriod, Student } from '../types';
+import { ClassPeriod, Student, getActivityTypeLabel } from '../types';
 import { 
   getStudentAttendanceRecord, 
   isRecordPresent, 
@@ -53,6 +53,7 @@ import { QRCodeDisplay } from './QRCodeDisplay';
 import { StudentAvatar } from './StudentAvatar';
 import { AppLogo } from './AppLogo';
 import { getPublicTelaoUrl, getPublicStudentCheckinUrl } from '../utils/publicUrl';
+import { NewSessionModal } from './NewSessionModal';
 
 interface LabProjectionScreenProps {
   onExitAndClose?: () => void;
@@ -117,6 +118,7 @@ export const LabProjectionScreen: React.FC<LabProjectionScreenProps> = ({
   const [isShareModalOpen, setIsShareModalOpen] = useState(false);
   const [isConfirmLockOpen, setIsConfirmLockOpen] = useState(false);
   const [isClassDropdownOpen, setIsClassDropdownOpen] = useState(false);
+  const [isLessonModalOpen, setIsLessonModalOpen] = useState(false);
   const [modalTab, setModalTab] = useState<'email' | 'whatsapp' | 'chromecast'>('email');
   const [tvEmailRecipient, setTvEmailRecipient] = useState(activeProfessor?.email || '');
   const [latestCheckedInIds, setLatestCheckedInIds] = useState<string[]>([]);
@@ -206,8 +208,8 @@ export const LabProjectionScreen: React.FC<LabProjectionScreenProps> = ({
       if (explicit) return explicit;
     }
 
-    // 6. Most recent session for this class
-    if (classSessions.length > 0) {
+    // 6. Most recent session for this class only if created today
+    if (classSessions.length > 0 && isDateToday(classSessions[0].date)) {
       return classSessions[0];
     }
 
@@ -249,26 +251,28 @@ export const LabProjectionScreen: React.FC<LabProjectionScreenProps> = ({
   // Projection is live strictly if the session is live and not locked
   const isLive = Boolean(effectiveSession && effectiveSession.isLive && !effectiveSession.isLocked);
 
-  // Auto-initialize active live session on standalone projection mount if no session exists for today
+  // Check if active live session exists for today on projection mount
   useEffect(() => {
     if (hasAutoStartedRef.current) return;
     hasAutoStartedRef.current = true;
 
-    const hasTodaySession = sessions.some(s => 
+    const hasTodayLiveSession = sessions.some(s => 
+      s.classGroupId === effectiveClassId && isDateToday(s.date) && s.isLive && !s.isLocked
+    );
+    if (hasTodayLiveSession) return;
+
+    const todayLockedSession = sessions.find(s => 
       s.classGroupId === effectiveClassId && isDateToday(s.date)
     );
-    const hasLiveSession = sessions.some(s => s.classGroupId === effectiveClassId && s.isLive && !s.isLocked);
 
-    if (!hasTodaySession && !hasLiveSession && effectiveClassId && isStandalonePortal) {
-      startNewSession({
-        classGroupId: effectiveClassId,
-        topic: 'Aula BMF4 - Morfofuncional',
-        activityCategory: 'pratica',
-        activityType: 'aula_pratica',
-        activePeriod: (urlPeriod as ClassPeriod) || 'p1_start'
-      });
+    if (todayLockedSession) {
+      // Cleanly reopen existing session for today
+      reopenCurrentSession(todayLockedSession.id, effectiveClassId);
+    } else if (effectiveClassId) {
+      // Never start without identifying lesson type! Open the Lesson Configuration modal
+      setIsLessonModalOpen(true);
     }
-  }, [effectiveClassId, isStandalonePortal, sessions, startNewSession, urlPeriod]);
+  }, [effectiveClassId, sessions, reopenCurrentSession, urlPeriod]);
 
   const rotationInterval = appSettings.tokenRotationSeconds || 10;
 
@@ -401,13 +405,6 @@ export const LabProjectionScreen: React.FC<LabProjectionScreenProps> = ({
       setSelectedPeriod(initialPeriod);
     }
   }, [initialPeriod]);
-
-  // Synchronize effective session when selectedPeriod changes
-  useEffect(() => {
-    if (selectedPeriod && effectiveSession && effectiveSession.activePeriod !== selectedPeriod) {
-      setActivePeriod(selectedPeriod);
-    }
-  }, [selectedPeriod, effectiveSession?.id]);
 
   const currentPeriod: ClassPeriod = (
     selectedPeriod ||
@@ -599,31 +596,22 @@ export const LabProjectionScreen: React.FC<LabProjectionScreenProps> = ({
       setSelectedClassId(targetClassId);
       startNewSession({
         classGroupId: targetClassId,
-        topic: 'Aula BMF4 - Morfofuncional',
-        activityCategory: 'pratica',
-        activityType: 'aula_pratica',
+        topic: effectiveSession?.topic || 'Aula BMF4 - Morfofuncional',
+        activityCategory: effectiveSession?.activityCategory || 'pratica',
+        activityType: effectiveSession?.activityType || 'aula_pratica',
+        labLocation: effectiveSession?.labLocation,
         activePeriod: '1',
       });
       const targetClassName = classes.find(c => c.id === targetClassId)?.name || 'Nova Turma';
       setTransitionToast({
         title: 'Turma Concluída e Nova Chamada Aberta!',
-        message: `A chamada da turma anterior foi encerrada. O Telão abriu automaticamente a chamada de: ${targetClassName}`,
+        message: `A chamada da turma anterior foi encerrada. O Telão abriu a chamada da: ${targetClassName}`,
         badge: 'Nova Turma',
       });
     } else if (isNewSession) {
       lockCurrentSession(effectiveSession?.id, effectiveClassId);
-      startNewSession({
-        classGroupId: effectiveClassId,
-        topic: 'Aula BMF4 - Morfofuncional',
-        activityCategory: 'pratica',
-        activityType: 'aula_pratica',
-        activePeriod: '1',
-      });
-      setTransitionToast({
-        title: 'Nova Aula Iniciada!',
-        message: `A chamada anterior foi encerrada. QR Code atualizado para uma nova aula da ${selectedClass?.name || 'Turma BMF4'}.`,
-        badge: 'Nova Aula',
-      });
+      setIsLessonModalOpen(true);
+      return;
     } else {
       transitionToPeriod(currentPeriod, targetPeriod, effectiveSession?.id);
       const nextInfo = stageConfig[targetPeriod] || { shortLabel: targetPeriod, label: targetPeriod };
@@ -801,13 +789,20 @@ export const LabProjectionScreen: React.FC<LabProjectionScreenProps> = ({
               </div>
               <p className="hidden md:flex text-xs text-slate-400 truncate items-center flex-wrap gap-1.5">
                 <span>{effectiveSession?.topic || 'Bases Morfofuncionais 4'} • Prof. {effectiveSession?.professorName || selectedClass?.professorName || 'Docente'}</span>
+                {effectiveSession?.activityType && (
+                  <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-[10px] font-bold border bg-teal-500/20 text-teal-300 border-teal-500/40">
+                    {getActivityTypeLabel(effectiveSession.activityType)}
+                  </span>
+                )}
                 {effectiveSession?.activityCategory === 'pratica' && effectiveSession.labLocation && (
                   <span className={`inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-[10px] font-bold border ${
                     effectiveSession.labLocation === 'anatomia' 
                       ? 'bg-amber-500/20 text-amber-300 border-amber-500/40' 
-                      : 'bg-indigo-500/20 text-indigo-300 border-indigo-500/40'
+                      : effectiveSession.labLocation === 'histologia'
+                      ? 'bg-indigo-500/20 text-indigo-300 border-indigo-500/40'
+                      : 'bg-emerald-500/20 text-emerald-300 border-emerald-500/40'
                   }`}>
-                    {effectiveSession.labLocation === 'anatomia' ? '🫀 Lab. Anatomia' : '🔬 Lab. Histologia'}
+                    {effectiveSession.labLocation === 'anatomia' ? '🫀 Lab. Anatomia' : effectiveSession.labLocation === 'histologia' ? '🔬 Lab. Histologia' : '🫀🔬 Anato/Histo'}
                   </span>
                 )}
               </p>
@@ -885,17 +880,10 @@ export const LabProjectionScreen: React.FC<LabProjectionScreenProps> = ({
                 <button
                   id="btn-telao-nova-aula-header"
                   onClick={() => {
-                    startNewSession({
-                      classGroupId: effectiveClassId,
-                      topic: 'Aula BMF4 - Morfofuncional',
-                      activityCategory: 'pratica',
-                      activityType: 'aula_pratica',
-                      activePeriod: '1'
-                    });
-                    playBeep('session_start');
+                    setIsLessonModalOpen(true);
                   }}
                   className="px-3 py-1.5 rounded-xl bg-slate-800 hover:bg-slate-700 text-teal-300 border border-teal-500/30 text-xs font-black flex items-center gap-1.5 shadow-md cursor-pointer transition-all active:scale-95 whitespace-nowrap"
-                  title="Iniciar uma nova aula para esta turma"
+                  title="Iniciar uma nova aula para esta turma identificando o tipo de aula"
                 >
                   <Plus className="w-3.5 h-3.5 text-teal-400" />
                   <span>Nova Aula</span>
@@ -1016,17 +1004,10 @@ export const LabProjectionScreen: React.FC<LabProjectionScreenProps> = ({
               <button
                 id="btn-telao-nova-aula-header-mobile"
                 onClick={() => {
-                  startNewSession({
-                    classGroupId: effectiveClassId,
-                    topic: 'Aula BMF4 - Morfofuncional',
-                    activityCategory: 'pratica',
-                    activityType: 'aula_pratica',
-                    activePeriod: 'p1_start'
-                  });
-                  playBeep('session_start');
+                  setIsLessonModalOpen(true);
                 }}
-                className="px-2 py-1 rounded-lg bg-slate-800 text-teal-300 border border-teal-500/30 text-[10px] font-black flex items-center gap-1 shadow-xs shrink-0 whitespace-nowrap"
-                title="Iniciar uma nova aula para esta turma"
+                className="px-2 py-1 rounded-lg bg-slate-800 text-teal-300 border border-teal-500/30 text-[10px] font-black flex items-center gap-1 shadow-xs shrink-0 whitespace-nowrap cursor-pointer"
+                title="Iniciar uma nova aula para esta turma identificando o tipo de aula"
               >
                 <Plus className="w-3 h-3 text-teal-400" />
                 <span>Nova</span>
@@ -1081,7 +1062,7 @@ export const LabProjectionScreen: React.FC<LabProjectionScreenProps> = ({
                   id="btn-telao-period-1"
                   onClick={() => {
                     setSelectedPeriod('1');
-                    setActivePeriod('1');
+                    setActivePeriod('1', effectiveSession?.id, effectiveClassId);
                     playBeep('click');
                   }}
                   className={`px-3 sm:px-4 py-1.5 sm:py-2 rounded-lg sm:rounded-xl text-[11px] sm:text-xs font-bold transition-all cursor-pointer flex items-center gap-1.5 whitespace-nowrap shrink-0 ${
@@ -1100,7 +1081,7 @@ export const LabProjectionScreen: React.FC<LabProjectionScreenProps> = ({
                   id="btn-telao-period-2"
                   onClick={() => {
                     setSelectedPeriod('2');
-                    setActivePeriod('2');
+                    setActivePeriod('2', effectiveSession?.id, effectiveClassId);
                     playBeep('click');
                   }}
                   className={`px-3 sm:px-4 py-1.5 sm:py-2 rounded-lg sm:rounded-xl text-[11px] sm:text-xs font-bold transition-all cursor-pointer flex items-center gap-1.5 whitespace-nowrap shrink-0 ${
@@ -1119,7 +1100,7 @@ export const LabProjectionScreen: React.FC<LabProjectionScreenProps> = ({
                   id="btn-telao-period-both"
                   onClick={() => {
                     setSelectedPeriod('both');
-                    setActivePeriod('both');
+                    setActivePeriod('both', effectiveSession?.id, effectiveClassId);
                     playBeep('click');
                   }}
                   className={`px-3 sm:px-4 py-1.5 sm:py-2 rounded-lg sm:rounded-xl text-[11px] sm:text-xs font-bold transition-all cursor-pointer flex items-center gap-1.5 whitespace-nowrap shrink-0 ${
@@ -1146,9 +1127,16 @@ export const LabProjectionScreen: React.FC<LabProjectionScreenProps> = ({
                     </span>
                   </div>
 
-                  <p className="text-[10px] sm:text-xs font-bold text-white tracking-tight truncate px-1">
-                    {selectedClass?.name || 'Turma BMF4'} • <span className="text-teal-300">{effectiveSession?.topic || selectedClass?.discipline || 'BMF4'}</span>
-                  </p>
+                  <div className="flex items-center justify-center gap-1.5 flex-wrap px-1">
+                    <p className="text-[10px] sm:text-xs font-bold text-white tracking-tight truncate">
+                      {selectedClass?.name || 'Turma BMF4'} • <span className="text-teal-300">{effectiveSession?.topic || selectedClass?.discipline || 'BMF4'}</span>
+                    </p>
+                    {effectiveSession?.activityType && (
+                      <span className="px-2 py-0.5 rounded-full bg-teal-500/20 text-teal-300 border border-teal-500/40 text-[9px] sm:text-[10px] font-bold">
+                        {getActivityTypeLabel(effectiveSession.activityType)}
+                      </span>
+                    )}
+                  </div>
                   
                   <div className="hidden sm:flex text-[9px] sm:text-[10px] text-slate-300 items-center justify-center gap-1.5">
                     <span>Data: {effectiveSession?.date ? effectiveSession.date.split('-').reverse().join('/') : new Date().toLocaleDateString('pt-BR')}</span>
@@ -1297,21 +1285,15 @@ export const LabProjectionScreen: React.FC<LabProjectionScreenProps> = ({
                 onClick={() => {
                   if (effectiveSession) {
                     reopenCurrentSession(effectiveSession.id, effectiveClassId);
+                    playBeep('session_start');
                   } else {
-                    startNewSession({
-                      classGroupId: effectiveClassId,
-                      topic: 'Aula BMF4 - Morfofuncional',
-                      activityCategory: 'pratica',
-                      activityType: 'aula_pratica',
-                      activePeriod: 'p1_start'
-                    });
+                    setIsLessonModalOpen(true);
                   }
-                  playBeep('session_start');
                 }}
                 className="w-full sm:w-auto inline-flex items-center justify-center gap-2 px-5 py-2.5 sm:py-3 rounded-2xl bg-teal-600 hover:bg-teal-500 text-white text-xs font-black shadow-lg transition-all active:scale-95 cursor-pointer"
               >
                 {isLocked ? <RotateCcw className="w-4 h-4" /> : <CheckCircle2 className="w-4 h-4" />}
-                <span>{isLocked ? 'Reabrir Chamada Atual' : 'Abrir Chamada e Exibir QR Code'}</span>
+                <span>{isLocked ? 'Reabrir Chamada Atual' : 'Identificar Aula e Abrir Chamada'}</span>
               </button>
 
               <button
@@ -1326,19 +1308,12 @@ export const LabProjectionScreen: React.FC<LabProjectionScreenProps> = ({
               <button
                 id="btn-telao-nova-aula-center"
                 onClick={() => {
-                  startNewSession({
-                    classGroupId: effectiveClassId,
-                    topic: 'Aula BMF4 - Morfofuncional',
-                    activityCategory: 'pratica',
-                    activityType: 'aula_pratica',
-                    activePeriod: '1'
-                  });
-                  playBeep('session_start');
+                  setIsLessonModalOpen(true);
                 }}
                 className="w-full sm:w-auto inline-flex items-center justify-center gap-2 px-5 py-2.5 sm:py-3 rounded-2xl bg-slate-800 hover:bg-slate-700 text-teal-300 border border-teal-500/40 text-xs font-black shadow-lg transition-all active:scale-95 cursor-pointer"
               >
                 <Plus className="w-4 h-4 text-teal-400" />
-                <span>Iniciar Nova Aula / Chamada</span>
+                <span>{isLocked ? 'Iniciar Nova Aula / Chamada' : 'Identificar Tipo de Aula'}</span>
               </button>
             </div>
           </div>
@@ -1627,6 +1602,19 @@ export const LabProjectionScreen: React.FC<LabProjectionScreenProps> = ({
           <span>Presenças registradas sincronizadas instantaneamente.</span>
         </div>
       </footer>
+
+      {/* Identify Lesson Type & Configure Session Modal */}
+      {isLessonModalOpen && (
+        <NewSessionModal
+          isOpen={isLessonModalOpen}
+          onClose={() => setIsLessonModalOpen(false)}
+          isTelaoIntent={true}
+          onSessionStarted={() => {
+            setIsLessonModalOpen(false);
+            playBeep('session_start');
+          }}
+        />
+      )}
 
     </div>
   );

@@ -34,67 +34,59 @@ import { StudentAvatar } from './StudentAvatar';
 import { Student } from '../types';
 import { exportModernGradesExcel } from '../utils/exportExcel';
 
-// Interface para um ciclo de avaliação (Teórica + Prática Anatomia + Prática Histologia + Média)
+// Interface para um ciclo de avaliação (Atividade Teórica + Atividade Prática Anato/Histo + Média)
 export interface GradeCycle {
   cycleNumber: number;
   label: string;
   name: string;
   teorica: { id: string; keyAlt: string; label: string; title: string };
-  anatomia: { id: string; keyAlt: string; label: string; title: string };
-  histologia: { id: string; keyAlt: string; label: string; title: string };
+  pratica: { id: string; keyAlt: string; label: string; title: string };
 }
 
 // 5 Ciclos Estruturados conforme solicitado:
-// Atividade Teórica N + Atividade Prática Anatomia N + Histologia N + Média N
+// Atividade Teórica 1 a 5 + Atividade Prática Anato/Histo 1 a 5 + Médias
 export const GRADE_CYCLES: GradeCycle[] = [
   {
     cycleNumber: 1,
     label: 'Ciclo 1',
     name: 'Atividades do Ciclo 1',
     teorica: { id: 'AT1', keyAlt: 't1', label: 'AT1', title: 'Atividade Teórica 1' },
-    anatomia: { id: 'APA1', keyAlt: 'a1', label: 'APA1', title: 'Atividade Prática Anatomia 1' },
-    histologia: { id: 'APH1', keyAlt: 'h1', label: 'APH1', title: 'Atividade Prática Histologia 1' },
+    pratica: { id: 'AH1', keyAlt: 'ap1', label: 'AH1', title: 'Atividade Prática Anato/Histo 1' },
   },
   {
     cycleNumber: 2,
     label: 'Ciclo 2',
     name: 'Atividades do Ciclo 2',
     teorica: { id: 'AT2', keyAlt: 't2', label: 'AT2', title: 'Atividade Teórica 2' },
-    anatomia: { id: 'APA2', keyAlt: 'a2', label: 'APA2', title: 'Atividade Prática Anatomia 2' },
-    histologia: { id: 'APH2', keyAlt: 'h2', label: 'APH2', title: 'Atividade Prática Histologia 2' },
+    pratica: { id: 'AH2', keyAlt: 'ap2', label: 'AH2', title: 'Atividade Prática Anato/Histo 2' },
   },
   {
     cycleNumber: 3,
     label: 'Ciclo 3',
     name: 'Atividades do Ciclo 3',
     teorica: { id: 'AT3', keyAlt: 't3', label: 'AT3', title: 'Atividade Teórica 3' },
-    anatomia: { id: 'APA3', keyAlt: 'a3', label: 'APA3', title: 'Atividade Prática Anatomia 3' },
-    histologia: { id: 'APH3', keyAlt: 'h3', label: 'APH3', title: 'Atividade Prática Histologia 3' },
+    pratica: { id: 'AH3', keyAlt: 'ap3', label: 'AH3', title: 'Atividade Prática Anato/Histo 3' },
   },
   {
     cycleNumber: 4,
     label: 'Ciclo 4',
     name: 'Atividades do Ciclo 4',
     teorica: { id: 'AT4', keyAlt: 't4', label: 'AT4', title: 'Atividade Teórica 4' },
-    anatomia: { id: 'APA4', keyAlt: 'a4', label: 'APA4', title: 'Atividade Prática Anatomia 4' },
-    histologia: { id: 'APH4', keyAlt: 'h4', label: 'APH4', title: 'Atividade Prática Histologia 4' },
+    pratica: { id: 'AH4', keyAlt: 'ap4', label: 'AH4', title: 'Atividade Prática Anato/Histo 4' },
   },
   {
     cycleNumber: 5,
     label: 'Ciclo 5',
     name: 'Atividades do Ciclo 5',
     teorica: { id: 'AT5', keyAlt: 't5', label: 'AT5', title: 'Atividade Teórica 5' },
-    anatomia: { id: 'APA5', keyAlt: 'a5', label: 'APA5', title: 'Atividade Prática Anatomia 5' },
-    histologia: { id: 'APH5', keyAlt: 'h5', label: 'APH5', title: 'Atividade Prática Histologia 5' },
+    pratica: { id: 'AH5', keyAlt: 'ap5', label: 'AH5', title: 'Atividade Prática Anato/Histo 5' },
   },
 ];
 
 export type FilterViewMode = 
-  | 'cycles_all'    // Todos os ciclos distribuídos: AT1, APA1, APH1, Média 1, AT2...
+  | 'cycles_all'    // Todos os ciclos distribuídos: AT1, AH1, Média 1, AT2...
   | 'teoricas'      // Apenas Teóricas (AT1 a AT5 + Média Teórica)
-  | 'praticas_all'  // Todas as Práticas (Anatomia + Histologia)
-  | 'anatomia'      // Apenas Anatomia (APA1 a APA5 + Média Anatomia)
-  | 'histologia'    // Apenas Histologia (APH1 a APH5 + Média Histologia)
+  | 'praticas'      // Apenas Práticas Anato/Histo (AH1 a AH5 + Média Prática Anato/Histo)
   | 'cycle_1'       // Foco no Ciclo 1
   | 'cycle_2'       // Foco no Ciclo 2
   | 'cycle_3'       // Foco no Ciclo 3
@@ -205,6 +197,16 @@ export const GradesManagement: React.FC = () => {
     }
     if (altKey && studentGrades[altKey] !== undefined && studentGrades[altKey] !== null) {
       return studentGrades[altKey];
+    }
+    // Backward compatibility for practical activities (AH1..5 can read APA1, APH1, AP1, etc.)
+    if (actId.startsWith('AH')) {
+      const num = actId.replace('AH', '');
+      const legacyKeys = [`APA${num}`, `APH${num}`, `a${num}`, `h${num}`, `AP${num}`, `ap${num}`];
+      for (const k of legacyKeys) {
+        if (studentGrades[k] !== undefined && studentGrades[k] !== null) {
+          return studentGrades[k];
+        }
+      }
     }
     return null;
   };
@@ -320,68 +322,39 @@ export const GradesManagement: React.FC = () => {
     }
   };
 
-  // 1. Média de um Ciclo Específico (Teórica + Prática Anatomia + Histologia)
+  // 1. Média de um Ciclo Específico (Atividade Teórica + Atividade Prática Anato/Histo)
   const getCycleAverage = (studentId: string, cycle: GradeCycle): number | null => {
     const vTeo = getGradeValue(studentId, cycle.teorica.id, cycle.teorica.keyAlt);
-    const vAnat = getGradeValue(studentId, cycle.anatomia.id, cycle.anatomia.keyAlt);
-    const vHist = getGradeValue(studentId, cycle.histologia.id, cycle.histologia.keyAlt);
+    const vPrat = getGradeValue(studentId, cycle.pratica.id, cycle.pratica.keyAlt);
 
-    const values = [vTeo, vAnat, vHist].filter((v): v is number => v !== null);
+    const values = [vTeo, vPrat].filter((v): v is number => v !== null);
     if (values.length === 0) return null;
     return Math.round((values.reduce((a, b) => a + b, 0) / values.length) * 10) / 10;
   };
 
-  // 2. Média de Práticas de um Ciclo (Anatomia + Histologia)
-  const getCyclePracticalAverage = (studentId: string, cycle: GradeCycle): number | null => {
-    const vAnat = getGradeValue(studentId, cycle.anatomia.id, cycle.anatomia.keyAlt);
-    const vHist = getGradeValue(studentId, cycle.histologia.id, cycle.histologia.keyAlt);
-
-    const values = [vAnat, vHist].filter((v): v is number => v !== null);
-    if (values.length === 0) return null;
-    return Math.round((values.reduce((a, b) => a + b, 0) / values.length) * 10) / 10;
-  };
-
-  // 3. Média Geral Teórica (AT1 a AT5)
+  // 2. Média Geral Teórica (AT1 a AT5)
   const getTeoricaAverage = (studentId: string): number | null => {
     const vals = GRADE_CYCLES.map(c => getGradeValue(studentId, c.teorica.id, c.teorica.keyAlt)).filter((v): v is number => v !== null);
     if (vals.length === 0) return null;
     return Math.round((vals.reduce((a, b) => a + b, 0) / vals.length) * 10) / 10;
   };
 
-  // 4. Média Geral Anatomia (APA1 a APA5)
-  const getAnatomiaAverage = (studentId: string): number | null => {
-    const vals = GRADE_CYCLES.map(c => getGradeValue(studentId, c.anatomia.id, c.anatomia.keyAlt)).filter((v): v is number => v !== null);
+  // 3. Média Geral Prática Anato/Histo (AH1 a AH5)
+  const getPraticaAverage = (studentId: string): number | null => {
+    const vals = GRADE_CYCLES.map(c => getGradeValue(studentId, c.pratica.id, c.pratica.keyAlt)).filter((v): v is number => v !== null);
     if (vals.length === 0) return null;
     return Math.round((vals.reduce((a, b) => a + b, 0) / vals.length) * 10) / 10;
   };
 
-  // 5. Média Geral Histologia (APH1 a APH5)
-  const getHistologiaAverage = (studentId: string): number | null => {
-    const vals = GRADE_CYCLES.map(c => getGradeValue(studentId, c.histologia.id, c.histologia.keyAlt)).filter((v): v is number => v !== null);
-    if (vals.length === 0) return null;
-    return Math.round((vals.reduce((a, b) => a + b, 0) / vals.length) * 10) / 10;
-  };
-
-  // 6. Média Geral de Práticas (Anatomia + Histologia)
-  const getAllPracticalsAverage = (studentId: string): number | null => {
-    const anatVals = GRADE_CYCLES.map(c => getGradeValue(studentId, c.anatomia.id, c.anatomia.keyAlt)).filter((v): v is number => v !== null);
-    const histVals = GRADE_CYCLES.map(c => getGradeValue(studentId, c.histologia.id, c.histologia.keyAlt)).filter((v): v is number => v !== null);
-    const all = [...anatVals, ...histVals];
-    if (all.length === 0) return null;
-    return Math.round((all.reduce((a, b) => a + b, 0) / all.length) * 10) / 10;
-  };
-
-  // 7. Média Geral BMF4 (todas as 15 atividades ou média consolidada)
+  // 4. Média Geral BMF4 (todas as 10 atividades: 5 teóricas + 5 práticas)
   const getStudentAverage = (studentId: string): number | null => {
     const allValues: number[] = [];
     GRADE_CYCLES.forEach(cycle => {
       const vTeo = getGradeValue(studentId, cycle.teorica.id, cycle.teorica.keyAlt);
-      const vAnat = getGradeValue(studentId, cycle.anatomia.id, cycle.anatomia.keyAlt);
-      const vHist = getGradeValue(studentId, cycle.histologia.id, cycle.histologia.keyAlt);
+      const vPrat = getGradeValue(studentId, cycle.pratica.id, cycle.pratica.keyAlt);
 
       if (vTeo !== null) allValues.push(vTeo);
-      if (vAnat !== null) allValues.push(vAnat);
-      if (vHist !== null) allValues.push(vHist);
+      if (vPrat !== null) allValues.push(vPrat);
     });
 
     if (allValues.length === 0) return null;
@@ -421,7 +394,7 @@ export const GradesManagement: React.FC = () => {
     let approved = 0;
     let recuperation = 0;
     let totalAssignedSlots = 0;
-    const totalPossibleSlots = total * 15;
+    const totalPossibleSlots = total * 10; // 5 Teóricas + 5 Práticas Anato/Histo
 
     classStudents.forEach(st => {
       const avg = getStudentAverage(st.id);
@@ -434,8 +407,7 @@ export const GradesManagement: React.FC = () => {
 
       GRADE_CYCLES.forEach(cycle => {
         if (getGradeValue(st.id, cycle.teorica.id, cycle.teorica.keyAlt) !== null) totalAssignedSlots++;
-        if (getGradeValue(st.id, cycle.anatomia.id, cycle.anatomia.keyAlt) !== null) totalAssignedSlots++;
-        if (getGradeValue(st.id, cycle.histologia.id, cycle.histologia.keyAlt) !== null) totalAssignedSlots++;
+        if (getGradeValue(st.id, cycle.pratica.id, cycle.pratica.keyAlt) !== null) totalAssignedSlots++;
       });
     });
 
@@ -466,8 +438,7 @@ export const GradesManagement: React.FC = () => {
         getGradeValue,
         getCycleAverage,
         getTeoricaAverage,
-        getAnatomiaAverage,
-        getHistologiaAverage,
+        getPraticaAverage,
         getStudentAverage
       });
       playBeep('success');
@@ -486,8 +457,7 @@ export const GradesManagement: React.FC = () => {
     const list: { id: string; label: string; name: string; type: string }[] = [];
     GRADE_CYCLES.forEach(c => {
       list.push({ id: c.teorica.id, label: c.teorica.label, name: `C${c.cycleNumber} - ${c.teorica.title}`, type: 'teorica' });
-      list.push({ id: c.anatomia.id, label: c.anatomia.label, name: `C${c.cycleNumber} - ${c.anatomia.title}`, type: 'anatomia' });
-      list.push({ id: c.histologia.id, label: c.histologia.label, name: `C${c.cycleNumber} - ${c.histologia.title}`, type: 'histologia' });
+      list.push({ id: c.pratica.id, label: c.pratica.label, name: `C${c.cycleNumber} - ${c.pratica.title}`, type: 'pratica' });
     });
     return list;
   }, []);
@@ -712,7 +682,7 @@ export const GradesManagement: React.FC = () => {
                   ? 'bg-sky-700 text-white shadow-xs'
                   : 'bg-slate-100 text-slate-700 hover:bg-slate-200'
               }`}
-              title="Exibir todos os 5 Ciclos sequenciais (Teórica + Anatomia + Histologia + Média)"
+              title="Exibir todos os 5 Ciclos sequenciais (Atividade Teórica + Atividade Prática Anato/Histo + Média)"
             >
               Todos os Ciclos (1 a 5)
             </button>
@@ -726,43 +696,19 @@ export const GradesManagement: React.FC = () => {
                   : 'bg-sky-50 text-sky-800 hover:bg-sky-100 border border-sky-200/60'
               }`}
             >
-              Apenas Teóricas (AT1 a AT5)
+              Atividade Teórica (AT1 a AT5)
             </button>
 
-            {/* Todas as Práticas */}
+            {/* Apenas Práticas Anato/Histo */}
             <button
-              onClick={() => setViewFilter('praticas_all')}
+              onClick={() => setViewFilter('praticas')}
               className={`px-3 py-1.5 rounded-xl text-xs font-bold transition-all cursor-pointer whitespace-nowrap ${
-                viewFilter === 'praticas_all'
+                viewFilter === 'praticas'
                   ? 'bg-emerald-700 text-white shadow-xs'
                   : 'bg-emerald-50 text-emerald-800 hover:bg-emerald-100 border border-emerald-200/60'
               }`}
             >
-              Todas as Práticas (Anat + Histo)
-            </button>
-
-            {/* Práticas - Anatomia */}
-            <button
-              onClick={() => setViewFilter('anatomia')}
-              className={`px-3 py-1.5 rounded-xl text-xs font-bold transition-all cursor-pointer whitespace-nowrap ${
-                viewFilter === 'anatomia'
-                  ? 'bg-teal-600 text-white shadow-xs'
-                  : 'bg-teal-50 text-teal-800 hover:bg-teal-100 border border-teal-200/60'
-              }`}
-            >
-              Prática Anatomia (APA1 a APA5)
-            </button>
-
-            {/* Práticas - Histologia */}
-            <button
-              onClick={() => setViewFilter('histologia')}
-              className={`px-3 py-1.5 rounded-xl text-xs font-bold transition-all cursor-pointer whitespace-nowrap ${
-                viewFilter === 'histologia'
-                  ? 'bg-purple-600 text-white shadow-xs'
-                  : 'bg-purple-50 text-purple-800 hover:bg-purple-100 border border-purple-200/60'
-              }`}
-            >
-              Prática Histologia (APH1 a APH5)
+              Atividade Prática Anato/Histo (AH1 a AH5)
             </button>
           </div>
 
@@ -778,7 +724,7 @@ export const GradesManagement: React.FC = () => {
                     ? 'bg-slate-900 text-amber-300 shadow-xs'
                     : 'bg-slate-100 text-slate-600 hover:bg-slate-200'
                 }`}
-                title={`Focar somente no Ciclo ${c.cycleNumber} (AT${c.cycleNumber} + APA${c.cycleNumber} + APH${c.cycleNumber} + Média ${c.cycleNumber})`}
+                title={`Focar somente no Ciclo ${c.cycleNumber} (AT${c.cycleNumber} + AH${c.cycleNumber} + Média ${c.cycleNumber})`}
               >
                 C{c.cycleNumber}
               </button>
@@ -799,13 +745,10 @@ export const GradesManagement: React.FC = () => {
           </span>
           <div className="flex items-center gap-2.5 text-[10px] sm:text-[11px] flex-wrap">
             <span className="inline-flex items-center gap-1 text-sky-800 font-bold">
-              <span className="w-2 h-2 sm:w-2.5 sm:h-2.5 rounded-full bg-sky-500"></span> Teórica (AT)
+              <span className="w-2 h-2 sm:w-2.5 sm:h-2.5 rounded-full bg-sky-500"></span> Atividade Teórica (AT)
             </span>
             <span className="inline-flex items-center gap-1 text-emerald-800 font-bold">
-              <span className="w-2 h-2 sm:w-2.5 sm:h-2.5 rounded-full bg-emerald-500"></span> Anatomia (APA)
-            </span>
-            <span className="inline-flex items-center gap-1 text-purple-800 font-bold">
-              <span className="w-2 h-2 sm:w-2.5 sm:h-2.5 rounded-full bg-purple-500"></span> Histologia (APH)
+              <span className="w-2 h-2 sm:w-2.5 sm:h-2.5 rounded-full bg-emerald-500"></span> Atividade Prática Anato/Histo (AH)
             </span>
             <span className="inline-flex items-center gap-1 text-amber-800 font-bold">
               <span className="w-2 h-2 sm:w-2.5 sm:h-2.5 rounded-full bg-amber-400"></span> Média Parcial
@@ -895,8 +838,8 @@ export const GradesManagement: React.FC = () => {
                 {/* VIEW MODE: ALL CYCLES (Sequencial: Ciclo 1 -> Ciclo 2 -> Ciclo 3 -> Ciclo 4 -> Ciclo 5) */}
                 {viewFilter === 'cycles_all' && (
                   GRADE_CYCLES.map(c => (
-                    <th key={`super-${c.cycleNumber}`} colSpan={4} className="py-2 px-2 text-center border-l-2 border-slate-800 bg-slate-900 text-amber-300 font-black">
-                      {c.label.toUpperCase()} (TEÓRICA + ANATOMIA + HISTOLOGIA)
+                    <th key={`super-${c.cycleNumber}`} colSpan={3} className="py-2 px-2 text-center border-l-2 border-slate-800 bg-slate-900 text-amber-300 font-black">
+                      {c.label.toUpperCase()} (TEÓRICA + PRÁTICA ANATO/HISTO)
                     </th>
                   ))
                 )}
@@ -906,39 +849,23 @@ export const GradesManagement: React.FC = () => {
                   const cycleNum = parseInt(viewFilter.replace('cycle_', ''), 10);
                   const c = GRADE_CYCLES.find(item => item.cycleNumber === cycleNum) || GRADE_CYCLES[0];
                   return (
-                    <th colSpan={4} className="py-2 px-2 text-center border-l-2 border-slate-800 bg-slate-900 text-amber-300 font-black">
-                      {c.label.toUpperCase()} (TEÓRICA + ANATOMIA + HISTOLOGIA)
+                    <th colSpan={3} className="py-2 px-2 text-center border-l-2 border-slate-800 bg-slate-900 text-amber-300 font-black">
+                      {c.label.toUpperCase()} (TEÓRICA + PRÁTICA ANATO/HISTO)
                     </th>
                   );
                 })()}
 
                 {/* VIEW MODE: TEÓRICAS APENAS */}
                 {viewFilter === 'teoricas' && (
-                  <th colSpan={5} className="py-2 px-2 text-center border-l-2 border-slate-800 bg-sky-950 text-sky-300 font-black">
-                    AVALIAÇÕES TEÓRICAS (AT1 A AT5)
+                  <th colSpan={6} className="py-2 px-2 text-center border-l-2 border-slate-800 bg-sky-950 text-sky-300 font-black">
+                    ATIVIDADES TEÓRICAS (AT1 A AT5)
                   </th>
                 )}
 
-                {/* VIEW MODE: TODAS AS PRÁTICAS */}
-                {viewFilter === 'praticas_all' && (
-                  GRADE_CYCLES.map(c => (
-                    <th key={`super-p-${c.cycleNumber}`} colSpan={3} className="py-2 px-2 text-center border-l-2 border-slate-800 bg-emerald-950 text-emerald-300 font-black">
-                      PRÁTICAS {c.label.toUpperCase()} (ANAT + HISTO)
-                    </th>
-                  ))
-                )}
-
-                {/* VIEW MODE: ANATOMIA APENAS */}
-                {viewFilter === 'anatomia' && (
-                  <th colSpan={5} className="py-2 px-2 text-center border-l-2 border-slate-800 bg-emerald-950 text-emerald-300 font-black">
-                    PRÁTICAS DE ANATOMIA (APA1 A APA5)
-                  </th>
-                )}
-
-                {/* VIEW MODE: HISTOLOGIA APENAS */}
-                {viewFilter === 'histologia' && (
-                  <th colSpan={5} className="py-2 px-2 text-center border-l-2 border-slate-800 bg-purple-950 text-purple-300 font-black">
-                    PRÁTICAS DE HISTOLOGIA (APH1 A APH5)
+                {/* VIEW MODE: PRÁTICAS ANATO/HISTO APENAS */}
+                {viewFilter === 'praticas' && (
+                  <th colSpan={6} className="py-2 px-2 text-center border-l-2 border-slate-800 bg-emerald-950 text-emerald-300 font-black">
+                    ATIVIDADES PRÁTICAS ANATO/HISTO (AH1 A AH5)
                   </th>
                 )}
 
@@ -964,11 +891,8 @@ export const GradesManagement: React.FC = () => {
                       <th className="py-2 px-1 text-center w-12 bg-sky-950/80 text-sky-200 border-l-2 border-slate-800" title={c.teorica.title}>
                         {c.teorica.label}
                       </th>
-                      <th className="py-2 px-1 text-center w-12 bg-emerald-950/80 text-emerald-200 border-l border-slate-800" title={c.anatomia.title}>
-                        {c.anatomia.label}
-                      </th>
-                      <th className="py-2 px-1 text-center w-12 bg-purple-950/80 text-purple-200 border-l border-slate-800" title={c.histologia.title}>
-                        {c.histologia.label}
+                      <th className="py-2 px-1 text-center w-12 bg-emerald-950/80 text-emerald-200 border-l border-slate-800" title={c.pratica.title}>
+                        {c.pratica.label}
                       </th>
                       <th className="py-2 px-1.5 text-center min-w-[48px] bg-amber-950/80 text-amber-300 border-l border-slate-800 font-black" title={`Média das notas lançadas no Ciclo ${c.cycleNumber}`}>
                         Média {c.cycleNumber}
@@ -986,11 +910,8 @@ export const GradesManagement: React.FC = () => {
                       <th className="py-2 px-1 text-center w-16 bg-sky-950/80 text-sky-200 border-l-2 border-slate-800" title={c.teorica.title}>
                         {c.teorica.label} (Teórica)
                       </th>
-                      <th className="py-2 px-1 text-center w-16 bg-emerald-950/80 text-emerald-200 border-l border-slate-800" title={c.anatomia.title}>
-                        {c.anatomia.label} (Anatomia)
-                      </th>
-                      <th className="py-2 px-1 text-center w-16 bg-purple-950/80 text-purple-200 border-l border-slate-800" title={c.histologia.title}>
-                        {c.histologia.label} (Histologia)
+                      <th className="py-2 px-1 text-center w-16 bg-emerald-950/80 text-emerald-200 border-l border-slate-800" title={c.pratica.title}>
+                        {c.pratica.label} (Anato/Histo)
                       </th>
                       <th className="py-2 px-2 text-center min-w-[65px] bg-amber-950/80 text-amber-300 border-l border-slate-800 font-black" title={`Média das notas do Ciclo ${c.cycleNumber}`}>
                         Média {c.cycleNumber}
@@ -1001,46 +922,30 @@ export const GradesManagement: React.FC = () => {
 
                 {/* TEÓRICAS ONLY */}
                 {viewFilter === 'teoricas' && (
-                  GRADE_CYCLES.map(c => (
-                    <th key={c.teorica.id} className="py-2 px-1 text-center w-14 bg-sky-950/80 text-sky-200 border-l border-slate-800" title={c.teorica.title}>
-                      {c.teorica.label}
+                  <>
+                    {GRADE_CYCLES.map(c => (
+                      <th key={c.teorica.id} className="py-2 px-1 text-center w-14 bg-sky-950/80 text-sky-200 border-l border-slate-800" title={c.teorica.title}>
+                        {c.teorica.label}
+                      </th>
+                    ))}
+                    <th className="py-2 px-1.5 text-center min-w-[55px] bg-sky-900 text-sky-200 border-l-2 border-slate-800 font-black" title="Média Geral Teórica (AT1 a AT5)">
+                      Média AT
                     </th>
-                  ))
+                  </>
                 )}
 
-                {/* TODAS AS PRÁTICAS */}
-                {viewFilter === 'praticas_all' && (
-                  GRADE_CYCLES.map(c => (
-                    <React.Fragment key={`sub-p-${c.cycleNumber}`}>
-                      <th className="py-2 px-1 text-center w-14 bg-emerald-950/80 text-emerald-200 border-l-2 border-slate-800" title={c.anatomia.title}>
-                        {c.anatomia.label}
+                {/* PRÁTICAS ANATO/HISTO ONLY */}
+                {viewFilter === 'praticas' && (
+                  <>
+                    {GRADE_CYCLES.map(c => (
+                      <th key={c.pratica.id} className="py-2 px-1 text-center w-14 bg-emerald-950/80 text-emerald-200 border-l border-slate-800" title={c.pratica.title}>
+                        {c.pratica.label}
                       </th>
-                      <th className="py-2 px-1 text-center w-14 bg-purple-950/80 text-purple-200 border-l border-slate-800" title={c.histologia.title}>
-                        {c.histologia.label}
-                      </th>
-                      <th className="py-2 px-1.5 text-center min-w-[48px] bg-teal-950/80 text-teal-300 border-l border-slate-800 font-black" title={`Média Prática Ciclo ${c.cycleNumber}`}>
-                        M.Prát {c.cycleNumber}
-                      </th>
-                    </React.Fragment>
-                  ))
-                )}
-
-                {/* ANATOMIA ONLY */}
-                {viewFilter === 'anatomia' && (
-                  GRADE_CYCLES.map(c => (
-                    <th key={c.anatomia.id} className="py-2 px-1 text-center w-14 bg-emerald-950/80 text-emerald-200 border-l border-slate-800" title={c.anatomia.title}>
-                      {c.anatomia.label}
+                    ))}
+                    <th className="py-2 px-1.5 text-center min-w-[55px] bg-emerald-900 text-emerald-200 border-l-2 border-slate-800 font-black" title="Média Geral Prática Anato/Histo (AH1 a AH5)">
+                      Média AH
                     </th>
-                  ))
-                )}
-
-                {/* HISTOLOGIA ONLY */}
-                {viewFilter === 'histologia' && (
-                  GRADE_CYCLES.map(c => (
-                    <th key={c.histologia.id} className="py-2 px-1 text-center w-14 bg-purple-950/80 text-purple-200 border-l border-slate-800" title={c.histologia.title}>
-                      {c.histologia.label}
-                    </th>
-                  ))
+                  </>
                 )}
 
               </tr>
@@ -1093,18 +998,17 @@ export const GradesManagement: React.FC = () => {
                         {st.registrationNumber}
                       </td>
 
-                      {/* VIEW 1: ALL CYCLES SEQUENTIAL (AT1, APA1, APH1, Média 1, AT2...) */}
+                      {/* VIEW 1: ALL CYCLES SEQUENTIAL (AT1, AH1, Média 1, AT2, AH2...) */}
                       {viewFilter === 'cycles_all' && (
                         GRADE_CYCLES.map(c => {
                           const vTeo = getGradeValue(st.id, c.teorica.id, c.teorica.keyAlt);
-                          const vAnat = getGradeValue(st.id, c.anatomia.id, c.anatomia.keyAlt);
-                          const vHist = getGradeValue(st.id, c.histologia.id, c.histologia.keyAlt);
+                          const vPrat = getGradeValue(st.id, c.pratica.id, c.pratica.keyAlt);
                           const avgCycle = getCycleAverage(st.id, c);
 
                           return (
                             <React.Fragment key={`cell-${c.cycleNumber}`}>
                               
-                              {/* Teórica N */}
+                              {/* Atividade Teórica N */}
                               <td className="py-1 px-0.5 text-center border-l-2 border-slate-200 bg-sky-50/20">
                                 <input
                                   id={`grade-input-${st.id}-${c.teorica.id}`}
@@ -1127,49 +1031,26 @@ export const GradesManagement: React.FC = () => {
                                 />
                               </td>
 
-                              {/* Prática Anatomia N */}
+                              {/* Atividade Prática Anato/Histo N */}
                               <td className="py-1 px-0.5 text-center border-l border-slate-100 bg-emerald-50/20">
                                 <input
-                                  id={`grade-input-${st.id}-${c.anatomia.id}`}
+                                  id={`grade-input-${st.id}-${c.pratica.id}`}
                                   type="text"
                                   inputMode="decimal"
                                   pattern="[0-9]*[.,]?[0-9]*"
                                   enterKeyHint="next"
                                   maxLength={4}
-                                  value={getDisplayValue(st.id, c.anatomia.id, c.anatomia.keyAlt)}
-                                  onChange={(e) => handleRawChange(st.id, c.anatomia.id, e.target.value)}
-                                  onBlur={() => handleBlur(st.id, c.anatomia.id)}
-                                  onKeyDown={(e) => handleKeyDown(e, idx, c.anatomia.id)}
+                                  value={getDisplayValue(st.id, c.pratica.id, c.pratica.keyAlt)}
+                                  onChange={(e) => handleRawChange(st.id, c.pratica.id, e.target.value)}
+                                  onBlur={() => handleBlur(st.id, c.pratica.id)}
+                                  onKeyDown={(e) => handleKeyDown(e, idx, c.pratica.id)}
                                   className={`w-10 text-center py-1.5 text-xs font-bold rounded-lg border focus:outline-none focus:ring-2 focus:ring-emerald-500 transition-all ${
-                                    vAnat !== null
-                                      ? vAnat >= 6 ? 'bg-emerald-50 text-emerald-900 border-emerald-300' : 'bg-rose-50 text-rose-700 border-rose-300'
+                                    vPrat !== null
+                                      ? vPrat >= 6 ? 'bg-emerald-50 text-emerald-900 border-emerald-300' : 'bg-rose-50 text-rose-700 border-rose-300'
                                       : 'bg-white text-slate-500 border-slate-200'
                                   }`}
                                   placeholder="-"
-                                  title={`${c.anatomia.title}: ${st.name}`}
-                                />
-                              </td>
-
-                              {/* Prática Histologia N */}
-                              <td className="py-1 px-0.5 text-center border-l border-slate-100 bg-purple-50/20">
-                                <input
-                                  id={`grade-input-${st.id}-${c.histologia.id}`}
-                                  type="text"
-                                  inputMode="decimal"
-                                  pattern="[0-9]*[.,]?[0-9]*"
-                                  enterKeyHint="next"
-                                  maxLength={4}
-                                  value={getDisplayValue(st.id, c.histologia.id, c.histologia.keyAlt)}
-                                  onChange={(e) => handleRawChange(st.id, c.histologia.id, e.target.value)}
-                                  onBlur={() => handleBlur(st.id, c.histologia.id)}
-                                  onKeyDown={(e) => handleKeyDown(e, idx, c.histologia.id)}
-                                  className={`w-10 text-center py-1.5 text-xs font-bold rounded-lg border focus:outline-none focus:ring-2 focus:ring-purple-500 transition-all ${
-                                    vHist !== null
-                                      ? vHist >= 6 ? 'bg-purple-50 text-purple-900 border-purple-300' : 'bg-rose-50 text-rose-700 border-rose-300'
-                                      : 'bg-white text-slate-500 border-slate-200'
-                                  }`}
-                                  placeholder="-"
-                                  title={`${c.histologia.title}: ${st.name}`}
+                                  title={`${c.pratica.title}: ${st.name}`}
                                 />
                               </td>
 
@@ -1196,8 +1077,7 @@ export const GradesManagement: React.FC = () => {
                         const cycleNum = parseInt(viewFilter.replace('cycle_', ''), 10);
                         const c = GRADE_CYCLES.find(item => item.cycleNumber === cycleNum) || GRADE_CYCLES[0];
                         const vTeo = getGradeValue(st.id, c.teorica.id, c.teorica.keyAlt);
-                        const vAnat = getGradeValue(st.id, c.anatomia.id, c.anatomia.keyAlt);
-                        const vHist = getGradeValue(st.id, c.histologia.id, c.histologia.keyAlt);
+                        const vPrat = getGradeValue(st.id, c.pratica.id, c.pratica.keyAlt);
                         const avgCycle = getCycleAverage(st.id, c);
 
                         return (
@@ -1221,48 +1101,29 @@ export const GradesManagement: React.FC = () => {
                                     : 'bg-white text-slate-500 border-slate-200'
                                 }`}
                                 placeholder="0.0"
+                                title={`${c.teorica.title}: ${st.name}`}
                               />
                             </td>
 
                             <td className="py-2 px-2 text-center border-l border-slate-100 bg-emerald-50/20">
                               <input
-                                id={`grade-input-${st.id}-${c.anatomia.id}`}
+                                id={`grade-input-${st.id}-${c.pratica.id}`}
                                 type="text"
                                 inputMode="decimal"
                                 pattern="[0-9]*[.,]?[0-9]*"
                                 enterKeyHint="next"
                                 maxLength={4}
-                                value={getDisplayValue(st.id, c.anatomia.id, c.anatomia.keyAlt)}
-                                onChange={(e) => handleRawChange(st.id, c.anatomia.id, e.target.value)}
-                                onBlur={() => handleBlur(st.id, c.anatomia.id)}
-                                onKeyDown={(e) => handleKeyDown(e, idx, c.anatomia.id)}
+                                value={getDisplayValue(st.id, c.pratica.id, c.pratica.keyAlt)}
+                                onChange={(e) => handleRawChange(st.id, c.pratica.id, e.target.value)}
+                                onBlur={() => handleBlur(st.id, c.pratica.id)}
+                                onKeyDown={(e) => handleKeyDown(e, idx, c.pratica.id)}
                                 className={`w-14 text-center py-1.5 text-xs font-bold rounded-xl border focus:outline-none focus:ring-2 focus:ring-emerald-500 transition-all ${
-                                  vAnat !== null
-                                    ? vAnat >= 6 ? 'bg-emerald-50 text-emerald-900 border-emerald-300' : 'bg-rose-50 text-rose-700 border-rose-300'
+                                  vPrat !== null
+                                    ? vPrat >= 6 ? 'bg-emerald-50 text-emerald-900 border-emerald-300' : 'bg-rose-50 text-rose-700 border-rose-300'
                                     : 'bg-white text-slate-500 border-slate-200'
                                 }`}
                                 placeholder="0.0"
-                              />
-                            </td>
-
-                            <td className="py-2 px-2 text-center border-l border-slate-100 bg-purple-50/20">
-                              <input
-                                id={`grade-input-${st.id}-${c.histologia.id}`}
-                                type="text"
-                                inputMode="decimal"
-                                pattern="[0-9]*[.,]?[0-9]*"
-                                enterKeyHint="next"
-                                maxLength={4}
-                                value={getDisplayValue(st.id, c.histologia.id, c.histologia.keyAlt)}
-                                onChange={(e) => handleRawChange(st.id, c.histologia.id, e.target.value)}
-                                onBlur={() => handleBlur(st.id, c.histologia.id)}
-                                onKeyDown={(e) => handleKeyDown(e, idx, c.histologia.id)}
-                                className={`w-14 text-center py-1.5 text-xs font-bold rounded-xl border focus:outline-none focus:ring-2 focus:ring-purple-500 transition-all ${
-                                  vHist !== null
-                                    ? vHist >= 6 ? 'bg-purple-50 text-purple-900 border-purple-300' : 'bg-rose-50 text-rose-700 border-rose-300'
-                                    : 'bg-white text-slate-500 border-slate-200'
-                                }`}
-                                placeholder="0.0"
+                                title={`${c.pratica.title}: ${st.name}`}
                               />
                             </td>
 
@@ -1284,154 +1145,94 @@ export const GradesManagement: React.FC = () => {
 
                       {/* VIEW 3: TEÓRICAS ONLY */}
                       {viewFilter === 'teoricas' && (
-                        GRADE_CYCLES.map(c => {
-                          const vTeo = getGradeValue(st.id, c.teorica.id, c.teorica.keyAlt);
-                          return (
-                            <td key={c.teorica.id} className="py-1 px-1 text-center border-l border-slate-200 bg-sky-50/20">
-                              <input
-                                id={`grade-input-${st.id}-${c.teorica.id}`}
-                                type="text"
-                                inputMode="decimal"
-                                pattern="[0-9]*[.,]?[0-9]*"
-                                enterKeyHint="next"
-                                maxLength={4}
-                                value={getDisplayValue(st.id, c.teorica.id, c.teorica.keyAlt)}
-                                onChange={(e) => handleRawChange(st.id, c.teorica.id, e.target.value)}
-                                onBlur={() => handleBlur(st.id, c.teorica.id)}
-                                onKeyDown={(e) => handleKeyDown(e, idx, c.teorica.id)}
-                                className={`w-12 text-center py-1.5 text-xs font-bold rounded-lg border focus:outline-none focus:ring-2 focus:ring-sky-500 transition-all ${
-                                  vTeo !== null
-                                    ? vTeo >= 6 ? 'bg-sky-50 text-sky-900 border-sky-300' : 'bg-rose-50 text-rose-700 border-rose-300'
-                                    : 'bg-white text-slate-500 border-slate-200'
-                                }`}
-                                placeholder="-"
-                              />
-                            </td>
-                          );
-                        })
-                      )}
-
-                      {/* VIEW 4: TODAS AS PRÁTICAS */}
-                      {viewFilter === 'praticas_all' && (
-                        GRADE_CYCLES.map(c => {
-                          const vAnat = getGradeValue(st.id, c.anatomia.id, c.anatomia.keyAlt);
-                          const vHist = getGradeValue(st.id, c.histologia.id, c.histologia.keyAlt);
-                          const pAvg = getCyclePracticalAverage(st.id, c);
-
-                          return (
-                            <React.Fragment key={`cell-p-${c.cycleNumber}`}>
-                              <td className="py-1 px-1 text-center border-l-2 border-slate-200 bg-emerald-50/20">
+                        <>
+                          {GRADE_CYCLES.map(c => {
+                            const vTeo = getGradeValue(st.id, c.teorica.id, c.teorica.keyAlt);
+                            return (
+                              <td key={c.teorica.id} className="py-1 px-1 text-center border-l border-slate-200 bg-sky-50/20">
                                 <input
-                                  id={`grade-input-${st.id}-${c.anatomia.id}`}
+                                  id={`grade-input-${st.id}-${c.teorica.id}`}
                                   type="text"
                                   inputMode="decimal"
                                   pattern="[0-9]*[.,]?[0-9]*"
                                   enterKeyHint="next"
                                   maxLength={4}
-                                  value={getDisplayValue(st.id, c.anatomia.id, c.anatomia.keyAlt)}
-                                  onChange={(e) => handleRawChange(st.id, c.anatomia.id, e.target.value)}
-                                  onBlur={() => handleBlur(st.id, c.anatomia.id)}
-                                  onKeyDown={(e) => handleKeyDown(e, idx, c.anatomia.id)}
-                                  className={`w-11 text-center py-1.5 text-xs font-bold rounded-lg border focus:outline-none focus:ring-2 focus:ring-emerald-500 transition-all ${
-                                    vAnat !== null
-                                      ? vAnat >= 6 ? 'bg-emerald-50 text-emerald-900 border-emerald-300' : 'bg-rose-50 text-rose-700 border-rose-300'
+                                  value={getDisplayValue(st.id, c.teorica.id, c.teorica.keyAlt)}
+                                  onChange={(e) => handleRawChange(st.id, c.teorica.id, e.target.value)}
+                                  onBlur={() => handleBlur(st.id, c.teorica.id)}
+                                  onKeyDown={(e) => handleKeyDown(e, idx, c.teorica.id)}
+                                  className={`w-12 text-center py-1.5 text-xs font-bold rounded-lg border focus:outline-none focus:ring-2 focus:ring-sky-500 transition-all ${
+                                    vTeo !== null
+                                      ? vTeo >= 6 ? 'bg-sky-50 text-sky-900 border-sky-300' : 'bg-rose-50 text-rose-700 border-rose-300'
                                       : 'bg-white text-slate-500 border-slate-200'
                                   }`}
                                   placeholder="-"
+                                  title={`${c.teorica.title}: ${st.name}`}
                                 />
                               </td>
-                              <td className="py-1 px-1 text-center border-l border-slate-100 bg-purple-50/20">
+                            );
+                          })}
+                          <td className="py-1 px-1 text-center border-l-2 border-slate-200 bg-sky-100/40">
+                            {(() => {
+                              const tAvg = getTeoricaAverage(st.id);
+                              return tAvg !== null ? (
+                                <span className={`text-[11px] font-black px-1.5 py-0.5 rounded-md ${
+                                  tAvg >= 6.0 ? 'text-sky-950 bg-sky-100 border border-sky-300' : 'text-rose-700 bg-rose-100 border border-rose-200'
+                                }`}>
+                                  {tAvg.toFixed(1)}
+                                </span>
+                              ) : (
+                                <span className="text-slate-300 font-mono text-xs">-</span>
+                              );
+                            })()}
+                          </td>
+                        </>
+                      )}
+
+                      {/* VIEW 4: PRÁTICAS ANATO/HISTO ONLY */}
+                      {viewFilter === 'praticas' && (
+                        <>
+                          {GRADE_CYCLES.map(c => {
+                            const vPrat = getGradeValue(st.id, c.pratica.id, c.pratica.keyAlt);
+                            return (
+                              <td key={c.pratica.id} className="py-1 px-1 text-center border-l border-slate-200 bg-emerald-50/20">
                                 <input
-                                  id={`grade-input-${st.id}-${c.histologia.id}`}
+                                  id={`grade-input-${st.id}-${c.pratica.id}`}
                                   type="text"
                                   inputMode="decimal"
                                   pattern="[0-9]*[.,]?[0-9]*"
                                   enterKeyHint="next"
                                   maxLength={4}
-                                  value={getDisplayValue(st.id, c.histologia.id, c.histologia.keyAlt)}
-                                  onChange={(e) => handleRawChange(st.id, c.histologia.id, e.target.value)}
-                                  onBlur={() => handleBlur(st.id, c.histologia.id)}
-                                  onKeyDown={(e) => handleKeyDown(e, idx, c.histologia.id)}
-                                  className={`w-11 text-center py-1.5 text-xs font-bold rounded-lg border focus:outline-none focus:ring-2 focus:ring-purple-500 transition-all ${
-                                    vHist !== null
-                                      ? vHist >= 6 ? 'bg-purple-50 text-purple-900 border-purple-300' : 'bg-rose-50 text-rose-700 border-rose-300'
+                                  value={getDisplayValue(st.id, c.pratica.id, c.pratica.keyAlt)}
+                                  onChange={(e) => handleRawChange(st.id, c.pratica.id, e.target.value)}
+                                  onBlur={() => handleBlur(st.id, c.pratica.id)}
+                                  onKeyDown={(e) => handleKeyDown(e, idx, c.pratica.id)}
+                                  className={`w-12 text-center py-1.5 text-xs font-bold rounded-lg border focus:outline-none focus:ring-2 focus:ring-emerald-500 transition-all ${
+                                    vPrat !== null
+                                      ? vPrat >= 6 ? 'bg-emerald-50 text-emerald-900 border-emerald-300' : 'bg-rose-50 text-rose-700 border-rose-300'
                                       : 'bg-white text-slate-500 border-slate-200'
                                   }`}
                                   placeholder="-"
+                                  title={`${c.pratica.title}: ${st.name}`}
                                 />
                               </td>
-                              <td className="py-1 px-1 text-center border-l border-slate-200 bg-teal-50/40">
-                                {pAvg !== null ? (
-                                  <span className={`text-[11px] font-black px-1.5 py-0.5 rounded-md ${
-                                    pAvg >= 6.0 ? 'text-teal-950 bg-teal-100 border border-teal-200' : 'text-rose-700 bg-rose-100 border border-rose-200'
-                                  }`}>
-                                    {pAvg.toFixed(1)}
-                                  </span>
-                                ) : (
-                                  <span className="text-slate-300 font-mono text-xs">-</span>
-                                )}
-                              </td>
-                            </React.Fragment>
-                          );
-                        })
-                      )}
-
-                      {/* VIEW 5: ANATOMIA ONLY */}
-                      {viewFilter === 'anatomia' && (
-                        GRADE_CYCLES.map(c => {
-                          const vAnat = getGradeValue(st.id, c.anatomia.id, c.anatomia.keyAlt);
-                          return (
-                            <td key={c.anatomia.id} className="py-1 px-1 text-center border-l border-slate-200 bg-emerald-50/20">
-                              <input
-                                id={`grade-input-${st.id}-${c.anatomia.id}`}
-                                type="text"
-                                inputMode="decimal"
-                                pattern="[0-9]*[.,]?[0-9]*"
-                                enterKeyHint="next"
-                                maxLength={4}
-                                value={getDisplayValue(st.id, c.anatomia.id, c.anatomia.keyAlt)}
-                                onChange={(e) => handleRawChange(st.id, c.anatomia.id, e.target.value)}
-                                onBlur={() => handleBlur(st.id, c.anatomia.id)}
-                                onKeyDown={(e) => handleKeyDown(e, idx, c.anatomia.id)}
-                                className={`w-12 text-center py-1.5 text-xs font-bold rounded-lg border focus:outline-none focus:ring-2 focus:ring-emerald-500 transition-all ${
-                                  vAnat !== null
-                                    ? vAnat >= 6 ? 'bg-emerald-50 text-emerald-900 border-emerald-300' : 'bg-rose-50 text-rose-700 border-rose-300'
-                                    : 'bg-white text-slate-500 border-slate-200'
-                                }`}
-                                placeholder="-"
-                              />
-                            </td>
-                          );
-                        })
-                      )}
-
-                      {/* VIEW 6: HISTOLOGIA ONLY */}
-                      {viewFilter === 'histologia' && (
-                        GRADE_CYCLES.map(c => {
-                          const vHist = getGradeValue(st.id, c.histologia.id, c.histologia.keyAlt);
-                          return (
-                            <td key={c.histologia.id} className="py-1 px-1 text-center border-l border-slate-200 bg-purple-50/20">
-                              <input
-                                id={`grade-input-${st.id}-${c.histologia.id}`}
-                                type="text"
-                                inputMode="decimal"
-                                pattern="[0-9]*[.,]?[0-9]*"
-                                enterKeyHint="next"
-                                maxLength={4}
-                                value={getDisplayValue(st.id, c.histologia.id, c.histologia.keyAlt)}
-                                onChange={(e) => handleRawChange(st.id, c.histologia.id, e.target.value)}
-                                onBlur={() => handleBlur(st.id, c.histologia.id)}
-                                onKeyDown={(e) => handleKeyDown(e, idx, c.histologia.id)}
-                                className={`w-12 text-center py-1.5 text-xs font-bold rounded-lg border focus:outline-none focus:ring-2 focus:ring-purple-500 transition-all ${
-                                  vHist !== null
-                                    ? vHist >= 6 ? 'bg-purple-50 text-purple-900 border-purple-300' : 'bg-rose-50 text-rose-700 border-rose-300'
-                                    : 'bg-white text-slate-500 border-slate-200'
-                                }`}
-                                placeholder="-"
-                              />
-                            </td>
-                          );
-                        })
+                            );
+                          })}
+                          <td className="py-1 px-1 text-center border-l-2 border-slate-200 bg-emerald-100/40">
+                            {(() => {
+                              const pAvg = getPraticaAverage(st.id);
+                              return pAvg !== null ? (
+                                <span className={`text-[11px] font-black px-1.5 py-0.5 rounded-md ${
+                                  pAvg >= 6.0 ? 'text-emerald-950 bg-emerald-100 border border-emerald-300' : 'text-rose-700 bg-rose-100 border border-rose-200'
+                                }`}>
+                                  {pAvg.toFixed(1)}
+                                </span>
+                              ) : (
+                                <span className="text-slate-300 font-mono text-xs">-</span>
+                              );
+                            })()}
+                          </td>
+                        </>
                       )}
 
                       {/* Summary: Média Final */}

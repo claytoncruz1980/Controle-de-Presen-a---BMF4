@@ -372,6 +372,9 @@ export const SecureStudentPortal: React.FC<SecureStudentPortalProps> = ({
   const prevPeriodRef = useRef<ClassPeriod>(activePeriod);
 
   useEffect(() => {
+    // If student is already viewing the confirmed receipt, DO NOT erase it due to background session sync
+    if (viewMode === 'receipt') return;
+
     const isNewSession = prevSessionIdRef.current && targetSession?.id && prevSessionIdRef.current !== targetSession.id;
     const isNewPeriod = prevPeriodRef.current && activePeriod && prevPeriodRef.current !== activePeriod;
 
@@ -383,7 +386,7 @@ export const SecureStudentPortal: React.FC<SecureStudentPortalProps> = ({
     }
     prevSessionIdRef.current = targetSession?.id;
     prevPeriodRef.current = activePeriod;
-  }, [targetSession?.id, activePeriod]);
+  }, [targetSession?.id, activePeriod, viewMode]);
 
   // Execute check-in for a specific RA
   const performCheckin = async (cleanRa: string, allowOtherClass: boolean = false) => {
@@ -403,16 +406,6 @@ export const SecureStudentPortal: React.FC<SecureStudentPortalProps> = ({
       setFeedbackError('É obrigatório confirmar o uso completo de todos os EPIs para entrar no laboratório.');
       playBeep('alert');
       return;
-    }
-
-    // Only block if session is locked AND no other live session exists for this class
-    if (isSessionLocked && !newerActiveSession) {
-      const anyLiveSession = sessions.find(s => s.isLive && !s.isLocked);
-      if (!anyLiveSession) {
-        setFeedbackError('A chamada desta aula foi encerrada pelo professor e novos check-ins estão bloqueados.');
-        playBeep('alert');
-        return;
-      }
     }
 
     setIsSubmitting(true);

@@ -31,14 +31,14 @@ interface ExportGradesOptions {
     label: string;
     name: string;
     teorica: { id: string; keyAlt: string; label: string; title: string };
-    anatomia: { id: string; keyAlt: string; label: string; title: string };
-    histologia: { id: string; keyAlt: string; label: string; title: string };
+    pratica: { id: string; keyAlt: string; label: string; title: string };
   }>;
   getGradeValue: (studentId: string, primaryKey: string, altKey?: string) => number | null;
   getCycleAverage: (studentId: string, cycle: any) => number | null;
   getTeoricaAverage: (studentId: string) => number | null;
-  getAnatomiaAverage: (studentId: string) => number | null;
-  getHistologiaAverage: (studentId: string) => number | null;
+  getPraticaAverage?: (studentId: string) => number | null;
+  getAnatomiaAverage?: (studentId: string) => number | null;
+  getHistologiaAverage?: (studentId: string) => number | null;
   getStudentAverage: (studentId: string) => number | null;
 }
 
@@ -420,6 +420,7 @@ export async function exportModernGradesExcel({
   getGradeValue,
   getCycleAverage,
   getTeoricaAverage,
+  getPraticaAverage,
   getAnatomiaAverage,
   getHistologiaAverage,
   getStudentAverage
@@ -435,7 +436,7 @@ export async function exportModernGradesExcel({
     views: [{ showGridLines: true }]
   });
 
-  const totalCols = 3 + (gradeCycles.length * 4) + 5; // Nº, Nome, RA + 5 ciclos * 4 + 4 médias + Situação = 28 cols
+  const totalCols = 3 + (gradeCycles.length * 3) + 4; // Nº, Nome, RA + 5 ciclos * 3 (AT, AH, Média C) + Média Teo + Média Prát + Média Final + Situação = 22 cols
 
   // Column definitions
   const columnsConfig: Array<{ key: string; width: number }> = [
@@ -445,15 +446,13 @@ export async function exportModernGradesExcel({
   ];
 
   gradeCycles.forEach(c => {
-    columnsConfig.push({ key: `at_${c.cycleNumber}`, width: 11 });
-    columnsConfig.push({ key: `apa_${c.cycleNumber}`, width: 11 });
-    columnsConfig.push({ key: `aph_${c.cycleNumber}`, width: 11 });
+    columnsConfig.push({ key: `at_${c.cycleNumber}`, width: 12 });
+    columnsConfig.push({ key: `ah_${c.cycleNumber}`, width: 12 });
     columnsConfig.push({ key: `med_${c.cycleNumber}`, width: 14 });
   });
 
   columnsConfig.push({ key: 'med_teo', width: 15 });
-  columnsConfig.push({ key: 'med_anat', width: 15 });
-  columnsConfig.push({ key: 'med_hist', width: 15 });
+  columnsConfig.push({ key: 'med_prat', width: 18 });
   columnsConfig.push({ key: 'med_final', width: 16 });
   columnsConfig.push({ key: 'situacao', width: 22 });
 
@@ -473,7 +472,7 @@ export async function exportModernGradesExcel({
   // ROW 2: Subtitle
   ws.mergeCells(`A2:${lastColLetter}2`);
   const subCell = ws.getCell('A2');
-  subCell.value = `Avaliações Teóricas, Práticas (Anatomia / Histologia) e Médias dos 5 Ciclos · UNINOVE Medicina`;
+  subCell.value = `Atividades Teóricas (1 a 5), Atividades Práticas Anato/Histo (1 a 5) e Médias dos 5 Ciclos · UNINOVE Medicina`;
   subCell.font = { name: 'Calibri', size: 10.5, color: { argb: 'FF333333' } };
   subCell.alignment = { vertical: 'middle', horizontal: 'left', indent: 1 };
   ws.getRow(2).height = 22;
@@ -488,13 +487,11 @@ export async function exportModernGradesExcel({
   const headerLabels: string[] = ['Nº', 'Aluno', 'RA'];
   gradeCycles.forEach(c => {
     headerLabels.push(`AT${c.cycleNumber}`);
-    headerLabels.push(`APA${c.cycleNumber}`);
-    headerLabels.push(`APH${c.cycleNumber}`);
+    headerLabels.push(`AH${c.cycleNumber}`);
     headerLabels.push(`Média C${c.cycleNumber}`);
   });
   headerLabels.push('Média Teórica');
-  headerLabels.push('Média Anatomia');
-  headerLabels.push('Média Histologia');
+  headerLabels.push('Média Anato/Histo');
   headerLabels.push('MÉDIA FINAL');
   headerLabels.push('Situação');
 
@@ -506,7 +503,7 @@ export async function exportModernGradesExcel({
     // Header Color by Section
     if (colIdx <= 3) {
       cell.fill = BLUE_HEADER_FILL;
-    } else if (colIdx > totalCols - 5) {
+    } else if (colIdx > totalCols - 4) {
       cell.fill = BLUE_FINAL_HEADER_FILL; // Deep Navy for Finals
     } else {
       cell.fill = BLUE_CYCLE_HEADER_FILL; // Slate Teal for Cycles
@@ -555,21 +552,16 @@ export async function exportModernGradesExcel({
     // Cycles Notes & Averages
     gradeCycles.forEach(c => {
       const vTeo = getGradeValue(st.id, c.teorica.id, c.teorica.keyAlt);
-      const vAnat = getGradeValue(st.id, c.anatomia.id, c.anatomia.keyAlt);
-      const vHist = getGradeValue(st.id, c.histologia.id, c.histologia.keyAlt);
+      const vPrat = getGradeValue(st.id, c.pratica.id, c.pratica.keyAlt);
       const avgC = getCycleAverage(st.id, c);
 
       // AT
       const cellTeo = row.getCell(col++);
       formatGradeCell(cellTeo, vTeo);
 
-      // APA
-      const cellAnat = row.getCell(col++);
-      formatGradeCell(cellAnat, vAnat);
-
-      // APH
-      const cellHist = row.getCell(col++);
-      formatGradeCell(cellHist, vHist);
+      // AH
+      const cellPrat = row.getCell(col++);
+      formatGradeCell(cellPrat, vPrat);
 
       // Média Ciclo
       const cellAvg = row.getCell(col++);
@@ -578,18 +570,14 @@ export async function exportModernGradesExcel({
 
     // General Averages
     const avgTeo = getTeoricaAverage(st.id);
-    const avgAnat = getAnatomiaAverage(st.id);
-    const avgHist = getHistologiaAverage(st.id);
+    const avgPrat = getPraticaAverage ? getPraticaAverage(st.id) : (getAnatomiaAverage && getHistologiaAverage ? getAnatomiaAverage(st.id) : null);
     const finalAvg = getStudentAverage(st.id);
 
     const cellTeoAvg = row.getCell(col++);
     formatAverageCell(cellTeoAvg, avgTeo);
 
-    const cellAnatAvg = row.getCell(col++);
-    formatAverageCell(cellAnatAvg, avgAnat);
-
-    const cellHistAvg = row.getCell(col++);
-    formatAverageCell(cellHistAvg, avgHist);
+    const cellPratAvg = row.getCell(col++);
+    formatAverageCell(cellPratAvg, avgPrat);
 
     // Média Final
     const cellFinal = row.getCell(col++);

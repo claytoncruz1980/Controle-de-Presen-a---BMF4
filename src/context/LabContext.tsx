@@ -13,6 +13,7 @@ import {
   Professor, 
   ActivityCategory, 
   ActivityType, 
+  getActivityTypeLabel,
   LaboratoryLocation,
   ClassPeriod, 
   StudentGradeRecord, 
@@ -120,7 +121,7 @@ interface LabContextType {
   resetSessionState: () => void;
   lockPeriod1: (sessionId?: string) => void;
   lockPeriod2: (sessionId?: string) => void;
-  setActivePeriod: (period: ClassPeriod) => void;
+  setActivePeriod: (period: ClassPeriod, targetSessionId?: string, targetClassId?: string) => void;
   transitionToPeriod: (fromPeriod: ClassPeriod, toPeriod: ClassPeriod, targetSessionId?: string) => void;
   setAttendanceStatus: (
     studentId: string, 
@@ -258,23 +259,33 @@ export const mergeAttendanceRecord = (currentRec?: AttendanceRecord, incomingRec
   if (!currentRec) return incomingRec;
   if (!incomingRec) return currentRec;
 
+  const mergeStatus = (curr?: AttendanceStatus, inc?: AttendanceStatus): AttendanceStatus => {
+    // If either side recorded attendance as present/late/excused, never revert back to absent
+    if (curr === 'present' || inc === 'present') return 'present';
+    if (curr === 'late' || inc === 'late') return 'late';
+    if (curr === 'excused' || inc === 'excused') return 'excused';
+    return inc || curr || 'absent';
+  };
+
   return {
     ...currentRec,
     ...incomingRec,
-    status: incomingRec.status !== undefined ? incomingRec.status : currentRec.status,
-    period1Status: incomingRec.period1Status !== undefined ? incomingRec.period1Status : currentRec.period1Status,
-    period2Status: incomingRec.period2Status !== undefined ? incomingRec.period2Status : currentRec.period2Status,
-    p1StartStatus: incomingRec.p1StartStatus !== undefined ? incomingRec.p1StartStatus : currentRec.p1StartStatus,
-    p1EndStatus: incomingRec.p1EndStatus !== undefined ? incomingRec.p1EndStatus : currentRec.p1EndStatus,
-    p2StartStatus: incomingRec.p2StartStatus !== undefined ? incomingRec.p2StartStatus : currentRec.p2StartStatus,
-    p2EndStatus: incomingRec.p2EndStatus !== undefined ? incomingRec.p2EndStatus : currentRec.p2EndStatus,
+    status: mergeStatus(currentRec.status, incomingRec.status),
+    period1Status: mergeStatus(currentRec.period1Status, incomingRec.period1Status),
+    period2Status: mergeStatus(currentRec.period2Status, incomingRec.period2Status),
+    p1StartStatus: mergeStatus(currentRec.p1StartStatus, incomingRec.p1StartStatus),
+    p1EndStatus: mergeStatus(currentRec.p1EndStatus, incomingRec.p1EndStatus),
+    p2StartStatus: mergeStatus(currentRec.p2StartStatus, incomingRec.p2StartStatus),
+    p2EndStatus: mergeStatus(currentRec.p2EndStatus, incomingRec.p2EndStatus),
     p1StartTimestamp: incomingRec.p1StartTimestamp || currentRec.p1StartTimestamp,
     p1EndTimestamp: incomingRec.p1EndTimestamp || currentRec.p1EndTimestamp,
     p2StartTimestamp: incomingRec.p2StartTimestamp || currentRec.p2StartTimestamp,
     p2EndTimestamp: incomingRec.p2EndTimestamp || currentRec.p2EndTimestamp,
     period1Timestamp: incomingRec.period1Timestamp || currentRec.period1Timestamp,
     period2Timestamp: incomingRec.period2Timestamp || currentRec.period2Timestamp,
-    timestamp: incomingRec.timestamp || currentRec.timestamp,
+    timestamp: (incomingRec.status === 'present' ? incomingRec.timestamp : undefined) || 
+               (currentRec.status === 'present' ? currentRec.timestamp : undefined) || 
+               incomingRec.timestamp || currentRec.timestamp,
     epiVerified: incomingRec.epiVerified ?? currentRec.epiVerified ?? true,
     checkinMethod: incomingRec.checkinMethod || currentRec.checkinMethod || 'qrcode',
     deviceId: incomingRec.deviceId || currentRec.deviceId,
@@ -2677,15 +2688,28 @@ export const LabProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
   };
 
   // Switch Active Period ('1' | '2' | 'both', 'p1_start', 'p1_end', 'p2_start', 'p2_end', 'activity_single')
-  const setActivePeriod = (period: ClassPeriod) => {
+  const setActivePeriod = (period: ClassPeriod, targetSessionId?: string, targetClassId?: string) => {
     const todayStr = new Date().toISOString().split('T')[0];
-    const liveSessionToday = sessions.find(s => s.classGroupId === selectedClassId && s.date === todayStr && s.isLive && !s.isLocked);
-    const targetSessionToUpdate = liveSessionToday || activeSession;
+    const classIdToUse = targetClassId || selectedClassId;
+    let targetSessionToUpdate: LabSession | undefined;
 
-    if (!targetSessionToUpdate || targetSessionToUpdate.isLocked || !targetSessionToUpdate.isLive) {
-      // Start a fresh, separate live session for today with this period directly
+    if (targetSessionId) {
+      targetSessionToUpdate = sessions.find(s => s.id === targetSessionId);
+    }
+    if (!targetSessionToUpdate && classIdToUse) {
+      targetSessionToUpdate = sessions.find(s => s.classGroupId === classIdToUse && s.date === todayStr && s.isLive && !s.isLocked);
+    }
+    if (!targetSessionToUpdate && classIdToUse) {
+      targetSessionToUpdate = sessions.find(s => s.classGroupId === classIdToUse && s.date === todayStr);
+    }
+    if (!targetSessionToUpdate) {
+      targetSessionToUpdate = activeSession;
+    }
+
+    if (!targetSessionToUpdate) {
+      // Start a fresh live session for today with this period directly
       startNewSession({
-        classGroupId: selectedClassId,
+        classGroupId: classIdToUse,
         topic: 'Aula BMF4 - Morfofuncional',
         activityCategory: 'pratica',
         activityType: 'aula_pratica',
@@ -2698,7 +2722,7 @@ export const LabProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
     const { token: freshToken } = generateFreshDynamicTokenAndHash();
 
     const updatedSessions = sessions.map(s => {
-      if (s.id === targetSessionToUpdate.id) {
+      if (s.id === targetSessionToUpdate!.id) {
         const patch: Partial<LabSession> = {
           activePeriod: period,
           isLive: true,
@@ -2707,7 +2731,7 @@ export const LabProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
           checkinCode: freshToken,
         };
 
-        // If advancing to 2ª Aula, ensure period 1 is cleanly locked and period 2 unlocked
+        // If advancing to 2ª Aula, lock period 1 and unlock period 2
         if (period === '2' || period === 'p2_start' || period === 'p2_end') {
           patch.isPeriod1Locked = true;
           patch.isP1StartLocked = true;
@@ -2719,11 +2743,14 @@ export const LabProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
           patch.isPeriod1Locked = false;
           if (period === 'p1_start') patch.isP1StartLocked = false;
           if (period === 'p1_end') patch.isP1EndLocked = false;
+          patch.isPeriod2Locked = true;
         } else if (period === 'both') {
           patch.isPeriod1Locked = false;
           patch.isPeriod2Locked = false;
           patch.isP1StartLocked = false;
           patch.isP2StartLocked = false;
+          patch.isP1EndLocked = false;
+          patch.isP2EndLocked = false;
         } else if (period === 'activity_single') {
           patch.isActivitySingleLocked = false;
         }
@@ -4942,7 +4969,7 @@ export const LabProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
       date: sessionDate,
       startTime: `${String(new Date(uniqueTs).getHours()).padStart(2, '0')}:${String(new Date(uniqueTs).getMinutes()).padStart(2, '0')}`,
       endTime: '12:00',
-      topic: topic || (isActivity ? 'Atividade Prática BMF4' : 'Aula BMF4 - Morfofuncional'),
+      topic: topic || (isActivity ? getActivityTypeLabel(actType) : 'Aula BMF4 - Morfofuncional'),
       anatomicalSpecimens: (isOptionsObj && optionsOrTopic.specimens) ? optionsOrTopic.specimens : (specimens && specimens.length > 0 ? specimens : ['Peças anatômicas / Roteiro prático']),
       checkinCode: freshDynamicToken,
       isLive: true,
