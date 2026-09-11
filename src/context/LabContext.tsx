@@ -13,7 +13,6 @@ import {
   Professor, 
   ActivityCategory, 
   ActivityType, 
-  getActivityTypeLabel,
   LaboratoryLocation,
   ClassPeriod, 
   StudentGradeRecord, 
@@ -190,11 +189,13 @@ interface LabContextType {
   deleteMultipleStudents: (ids: string[]) => void;
   deleteAllStudentsFromClass: (classId: string) => void;
   clearAllStudents: () => void;
+  deletedStudentIds: string[];
 
   // CRUD Classes
   addClassGroup: (classGroup: Omit<ClassGroup, 'id'>) => void;
   updateClassGroup: (id: string, classGroup: Partial<ClassGroup>) => void;
   deleteClassGroup: (id: string, deleteAssociatedStudents?: boolean) => void;
+  deletedClassIds: string[];
 
   // Sessions CRUD & Management
   startNewSession: (optionsOrTopic: string | StartSessionOptions, specimens?: string[], notes?: string) => void;
@@ -292,17 +293,22 @@ export const mergeAttendanceRecord = (currentRec?: AttendanceRecord, incomingRec
   };
 };
 
-export const mergeStudentLists = (currentStudents: Student[], incomingStudents: Student[]): Student[] => {
+export const mergeStudentLists = (
+  currentStudents: Student[], 
+  incomingStudents: Student[],
+  deletedIds: string[] = []
+): Student[] => {
+  const deletedSet = new Set(deletedIds || []);
   if (!Array.isArray(incomingStudents) || incomingStudents.length === 0) {
-    return currentStudents || [];
+    return (currentStudents || []).filter(st => st && st.id && !deletedSet.has(st.id));
   }
   const resultMap = new Map<string, Student>();
   (currentStudents || []).forEach(st => {
-    if (st && st.id) resultMap.set(st.id, { ...st });
+    if (st && st.id && !deletedSet.has(st.id)) resultMap.set(st.id, { ...st });
   });
 
   incomingStudents.forEach(inc => {
-    if (!inc || !inc.id) return;
+    if (!inc || !inc.id || deletedSet.has(inc.id)) return;
     const existing = resultMap.get(inc.id);
     if (!existing) {
       resultMap.set(inc.id, { ...inc });
@@ -317,17 +323,22 @@ export const mergeStudentLists = (currentStudents: Student[], incomingStudents: 
   return Array.from(resultMap.values());
 };
 
-export const mergeClassLists = (currentClasses: ClassGroup[], incomingClasses: ClassGroup[]): ClassGroup[] => {
+export const mergeClassLists = (
+  currentClasses: ClassGroup[], 
+  incomingClasses: ClassGroup[],
+  deletedIds: string[] = []
+): ClassGroup[] => {
+  const deletedSet = new Set(deletedIds || []);
   if (!Array.isArray(incomingClasses) || incomingClasses.length === 0) {
-    return currentClasses || [];
+    return (currentClasses || []).filter(c => c && c.id && !deletedSet.has(c.id));
   }
   const resultMap = new Map<string, ClassGroup>();
   (currentClasses || []).forEach(c => {
-    if (c && c.id) resultMap.set(c.id, { ...c });
+    if (c && c.id && !deletedSet.has(c.id)) resultMap.set(c.id, { ...c });
   });
 
   incomingClasses.forEach(inc => {
-    if (!inc || !inc.id) return;
+    if (!inc || !inc.id || deletedSet.has(inc.id)) return;
     const existing = resultMap.get(inc.id);
     if (!existing) {
       resultMap.set(inc.id, { ...inc });
@@ -695,6 +706,18 @@ export const LabProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
     return '';
   });
 
+  // 1.5 Deleted Classes tracking
+  const [deletedClassIds, setDeletedClassIds] = useState<string[]>(() => {
+    try {
+      const saved = localStorage.getItem(STORAGE_PREFIX + 'deleted_class_ids');
+      return saved ? JSON.parse(saved) : [];
+    } catch {
+      return [];
+    }
+  });
+  const deletedClassIdsRef = useRef(deletedClassIds);
+  deletedClassIdsRef.current = deletedClassIds;
+
   // 2. Classes (ALWAYS initialized and kept sorted alphabetically)
   const [classes, setClasses] = useState<ClassGroup[]>(() => {
     const saved = localStorage.getItem(STORAGE_PREFIX + 'classes');
@@ -732,13 +755,35 @@ export const LabProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
         ];
       }
     }
-    return sortClassesAlphabetically(parsed);
+
+    const savedDeletedClasses = localStorage.getItem(STORAGE_PREFIX + 'deleted_class_ids');
+    const deletedClassList: string[] = savedDeletedClasses ? JSON.parse(savedDeletedClasses) : [];
+    const delClassSet = new Set(deletedClassList);
+    const filtered = (parsed || []).filter(c => c && c.id && !delClassSet.has(c.id));
+
+    return sortClassesAlphabetically(filtered);
   });
+
+  // 2.5 Deleted Students tracking
+  const [deletedStudentIds, setDeletedStudentIds] = useState<string[]>(() => {
+    try {
+      const saved = localStorage.getItem(STORAGE_PREFIX + 'deleted_student_ids');
+      return saved ? JSON.parse(saved) : [];
+    } catch {
+      return [];
+    }
+  });
+  const deletedStudentIdsRef = useRef(deletedStudentIds);
+  deletedStudentIdsRef.current = deletedStudentIds;
 
   // 3. Students
   const [students, setStudents] = useState<Student[]>(() => {
     const saved = localStorage.getItem(STORAGE_PREFIX + 'students');
-    return saved ? JSON.parse(saved) : INITIAL_STUDENTS;
+    let parsed: Student[] = saved ? JSON.parse(saved) : INITIAL_STUDENTS;
+    const savedDeletedStudents = localStorage.getItem(STORAGE_PREFIX + 'deleted_student_ids');
+    const deletedStudentList: string[] = savedDeletedStudents ? JSON.parse(savedDeletedStudents) : [];
+    const delStudentSet = new Set(deletedStudentList);
+    return (parsed || []).filter(s => s && s.id && !delStudentSet.has(s.id));
   });
 
   // 4. Sessions & Deletion tracking
@@ -876,6 +921,27 @@ export const LabProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
   const [lastSyncDate, setLastSyncDate] = useState<string>(new Date().toLocaleTimeString('pt-BR', { hour: '2-digit', minute: '2-digit' }));
   const [realtimeConnected, setRealtimeConnected] = useState<boolean>(false);
   const [lastSyncTimestamp, setLastSyncTimestamp] = useState<number>(Date.now());
+  const lastSyncTimestampRef = useRef<number>(Date.now());
+  lastSyncTimestampRef.current = lastSyncTimestamp;
+
+  const pendingStorageRef = useRef<Record<string, string>>({});
+  const storageDebounceTimeoutRef = useRef<any>(null);
+
+  const scheduleLocalStorageSave = useCallback((key: string, value: string) => {
+    pendingStorageRef.current[key] = value;
+    if (!storageDebounceTimeoutRef.current) {
+      storageDebounceTimeoutRef.current = setTimeout(() => {
+        storageDebounceTimeoutRef.current = null;
+        const entries = Object.entries(pendingStorageRef.current);
+        pendingStorageRef.current = {};
+        for (const [k, v] of entries) {
+          try {
+            localStorage.setItem(k, String(v));
+          } catch {}
+        }
+      }, 150);
+    }
+  }, []);
 
   // Connected Devices Management
   const [customDeviceName, setCustomDeviceNameState] = useState<string>(() => {
@@ -1014,7 +1080,7 @@ export const LabProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
             }, { merge: true });
           } catch (firestoreErr: any) {
             if (firestoreErr?.code === 'resource-exhausted') {
-              firestoreBlockedUntilRef.current = Date.now() + 5 * 60 * 1000;
+              firestoreBlockedUntilRef.current = Date.now() + 30 * 1000;
             }
             console.debug('Firestore outbox write notice:', firestoreErr?.message || firestoreErr);
           }
@@ -1025,7 +1091,7 @@ export const LabProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
       const response = await fetch('/api/outbox/process', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ items: pendingItems }),
+        body: JSON.stringify({ items: pendingItems, senderClientId: clientIdRef.current }),
       });
 
       if (response.ok) {
@@ -1181,6 +1247,8 @@ export const LabProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
       userMutation: true,
       deletedSessionIds: statePayload.deletedSessionIds || deletedSessionIdsRef.current || [],
       deletedProfessorIds: statePayload.deletedProfessorIds || deletedProfessorIdsRef.current || [],
+      deletedStudentIds: statePayload.deletedStudentIds || deletedStudentIdsRef.current || [],
+      deletedClassIds: statePayload.deletedClassIds || deletedClassIdsRef.current || [],
       lastUpdated: statePayload.lastUpdated || Date.now(),
     };
 
@@ -1202,7 +1270,7 @@ export const LabProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
           payload: enrichedPayload,
         }, { merge: true }).catch((err: any) => {
           if (err?.code === 'resource-exhausted' || (err?.message && err.message.includes('Quota limit exceeded'))) {
-            firestoreBlockedUntilRef.current = Date.now() + 5 * 60 * 1000;
+            firestoreBlockedUntilRef.current = Date.now() + 30 * 1000;
           }
           console.debug('Cloud sync notice (offline/fallback mode):', err?.message || err);
         });
@@ -1239,11 +1307,17 @@ export const LabProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
     if (serverState.senderClientId && serverState.senderClientId === clientIdRef.current) {
       const now = Date.now();
       setLastSyncTimestamp(now);
+      lastSyncTimestampRef.current = Math.max(lastSyncTimestampRef.current, Number(serverState.lastUpdated) || now);
       setLastSyncDate(new Date().toLocaleTimeString('pt-BR', { hour: '2-digit', minute: '2-digit', second: '2-digit' }));
       return;
     }
 
-    const serverTs = Number(serverState.lastUpdated) || Date.now();
+    const serverTs = Number(serverState.lastUpdated) || 0;
+
+    // Discard if already applied or older, unless explicit reset or forced user mutation
+    if (serverTs > 0 && serverTs <= lastSyncTimestampRef.current && !serverState.isExplicitReset && !serverState.userMutation) {
+      return;
+    }
 
     // If explicit reset is triggered, wipe state immediately
     if (serverState.isExplicitReset) {
@@ -1267,6 +1341,7 @@ export const LabProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
         localStorage.removeItem(STORAGE_PREFIX + 'selectedClass');
       } catch {}
       const appliedTs = serverTs > 0 ? serverTs : Date.now();
+      lastSyncTimestampRef.current = Math.max(lastSyncTimestampRef.current, appliedTs);
       setLocalLastUpdated(appliedTs);
       setLastSyncTimestamp(appliedTs);
       setLastSyncDate(new Date().toLocaleTimeString('pt-BR', { hour: '2-digit', minute: '2-digit', second: '2-digit' }));
@@ -1280,9 +1355,7 @@ export const LabProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
       allDeletedIds = Array.from(new Set([...deletedSessionIdsRef.current, ...serverState.deletedSessionIds]));
       setDeletedSessionIds(allDeletedIds);
       deletedSessionIdsRef.current = allDeletedIds;
-      try {
-        localStorage.setItem(STORAGE_PREFIX + 'deleted_session_ids', JSON.stringify(allDeletedIds));
-      } catch {}
+      scheduleLocalStorageSave(STORAGE_PREFIX + 'deleted_session_ids', JSON.stringify(allDeletedIds));
     }
 
     // Track incoming deletedProfessorIds
@@ -1291,9 +1364,25 @@ export const LabProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
       allDeletedProfIds = Array.from(new Set([...deletedProfessorIdsRef.current, ...serverState.deletedProfessorIds]));
       setDeletedProfessorIds(allDeletedProfIds);
       deletedProfessorIdsRef.current = allDeletedProfIds;
-      try {
-        localStorage.setItem(STORAGE_PREFIX + 'deleted_professor_ids', JSON.stringify(allDeletedProfIds));
-      } catch {}
+      scheduleLocalStorageSave(STORAGE_PREFIX + 'deleted_professor_ids', JSON.stringify(allDeletedProfIds));
+    }
+
+    // Track incoming deletedStudentIds
+    let allDeletedStudentIds = deletedStudentIdsRef.current;
+    if (Array.isArray(serverState.deletedStudentIds) && serverState.deletedStudentIds.length > 0) {
+      allDeletedStudentIds = Array.from(new Set([...deletedStudentIdsRef.current, ...serverState.deletedStudentIds]));
+      setDeletedStudentIds(allDeletedStudentIds);
+      deletedStudentIdsRef.current = allDeletedStudentIds;
+      scheduleLocalStorageSave(STORAGE_PREFIX + 'deleted_student_ids', JSON.stringify(allDeletedStudentIds));
+    }
+
+    // Track incoming deletedClassIds
+    let allDeletedClassIds = deletedClassIdsRef.current;
+    if (Array.isArray(serverState.deletedClassIds) && serverState.deletedClassIds.length > 0) {
+      allDeletedClassIds = Array.from(new Set([...deletedClassIdsRef.current, ...serverState.deletedClassIds]));
+      setDeletedClassIds(allDeletedClassIds);
+      deletedClassIdsRef.current = allDeletedClassIds;
+      scheduleLocalStorageSave(STORAGE_PREFIX + 'deleted_class_ids', JSON.stringify(allDeletedClassIds));
     }
 
     isRemoteUpdateRef.current = true;
@@ -1305,20 +1394,18 @@ export const LabProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
         : mergeProfessorLists(professorsRef.current, serverState.professors)
       ).filter(p => p && p.id && !deletedProfSet.has(p.id));
       setProfessors(mergedProfs);
-      try {
-        localStorage.setItem(STORAGE_PREFIX + 'professors', JSON.stringify(mergedProfs));
-      } catch {}
+      scheduleLocalStorageSave(STORAGE_PREFIX + 'professors', JSON.stringify(mergedProfs));
     }
 
     if (Array.isArray(serverState.classes)) {
-      const mergedClasses = serverState.userMutation
+      const delClassSet = new Set(allDeletedClassIds);
+      const mergedClasses = (serverState.userMutation
         ? serverState.classes
-        : mergeClassLists(classesRef.current, serverState.classes);
+        : mergeClassLists(classesRef.current, serverState.classes, allDeletedClassIds)
+      ).filter(c => c && c.id && !delClassSet.has(c.id));
       const sorted = sortClassesAlphabetically(mergedClasses);
       setClasses(sorted);
-      try {
-        localStorage.setItem(STORAGE_PREFIX + 'classes', JSON.stringify(sorted));
-      } catch {}
+      scheduleLocalStorageSave(STORAGE_PREFIX + 'classes', JSON.stringify(sorted));
 
       setSelectedClassId(prevId => {
         if (prevId && sorted.some(c => c.id === prevId)) {
@@ -1336,26 +1423,24 @@ export const LabProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
     if (Array.isArray(serverState.sessions)) {
       mergedSessionsList = mergeSessionLists(sessionsRef.current, serverState.sessions, allDeletedIds);
       setSessions(mergedSessionsList);
-      try {
-        localStorage.setItem(STORAGE_PREFIX + 'sessions', JSON.stringify(mergedSessionsList));
-      } catch {}
+      scheduleLocalStorageSave(STORAGE_PREFIX + 'sessions', JSON.stringify(mergedSessionsList));
     }
 
     if (Array.isArray(serverState.students)) {
-      const mergedStudents = serverState.userMutation
+      const delStudentSet = new Set(allDeletedStudentIds);
+      const mergedStudents = (serverState.userMutation
         ? serverState.students
-        : mergeStudentLists(studentsRef.current, serverState.students);
+        : mergeStudentLists(studentsRef.current, serverState.students, allDeletedStudentIds)
+      ).filter(s => s && s.id && !delStudentSet.has(s.id));
       const recomputed = computeStudentsWithRecalculatedStats(mergedStudents, mergedSessionsList);
       setStudents(recomputed);
-      try {
-        localStorage.setItem(STORAGE_PREFIX + 'students', JSON.stringify(recomputed));
-      } catch {}
+      scheduleLocalStorageSave(STORAGE_PREFIX + 'students', JSON.stringify(recomputed));
     } else if (mergedSessionsList !== sessionsRef.current) {
+      const delStudentSet = new Set(allDeletedStudentIds);
       setStudents(prev => {
-        const recomputed = computeStudentsWithRecalculatedStats(prev, mergedSessionsList);
-        try {
-          localStorage.setItem(STORAGE_PREFIX + 'students', JSON.stringify(recomputed));
-        } catch {}
+        const filtered = prev.filter(s => s && s.id && !delStudentSet.has(s.id));
+        const recomputed = computeStudentsWithRecalculatedStats(filtered, mergedSessionsList);
+        scheduleLocalStorageSave(STORAGE_PREFIX + 'students', JSON.stringify(recomputed));
         return recomputed;
       });
     }
@@ -1365,9 +1450,7 @@ export const LabProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
         ? serverState.justifications
         : mergeJustificationLists(justificationsRef.current, serverState.justifications);
       setJustifications(mergedJustifications);
-      try {
-        localStorage.setItem(STORAGE_PREFIX + 'justifications', JSON.stringify(mergedJustifications));
-      } catch {}
+      scheduleLocalStorageSave(STORAGE_PREFIX + 'justifications', JSON.stringify(mergedJustifications));
     }
 
     if (Array.isArray(serverState.studentGrades)) {
@@ -1375,16 +1458,12 @@ export const LabProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
         ? serverState.studentGrades
         : mergeGradeLists(studentGradesRef.current, serverState.studentGrades);
       setStudentGrades(mergedGrades);
-      try {
-        localStorage.setItem(STORAGE_PREFIX + 'student_grades', JSON.stringify(mergedGrades));
-      } catch {}
+      scheduleLocalStorageSave(STORAGE_PREFIX + 'student_grades', JSON.stringify(mergedGrades));
     }
 
     if (serverState.appSettings) {
       setAppSettings(serverState.appSettings);
-      try {
-        localStorage.setItem(STORAGE_PREFIX + 'settings', JSON.stringify(serverState.appSettings));
-      } catch {}
+      scheduleLocalStorageSave(STORAGE_PREFIX + 'settings', JSON.stringify(serverState.appSettings));
     }
 
     if (serverState.teacherPresences && typeof serverState.teacherPresences === 'object') {
@@ -1416,6 +1495,7 @@ export const LabProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
     }
 
     const appliedTs = serverTs > 0 ? serverTs : Date.now();
+    lastSyncTimestampRef.current = Math.max(lastSyncTimestampRef.current, appliedTs);
     setLocalLastUpdated(appliedTs);
     setLastSyncTimestamp(appliedTs);
     setLastSyncDate(new Date().toLocaleTimeString('pt-BR', { hour: '2-digit', minute: '2-digit', second: '2-digit' }));
@@ -1516,6 +1596,18 @@ export const LabProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
               if (data.state) {
                 applyServerState(data.state);
               }
+            } else if (data.type === 'DEVICES_UPDATED' && data.devices) {
+              const now = Date.now();
+              const mergedDevs: Record<string, ConnectedDevice> = {
+                ...connectedDevicesMapRef.current,
+                ...data.devices,
+              };
+              Object.keys(mergedDevs).forEach(devId => {
+                if (now - (mergedDevs[devId]?.lastPing || 0) > 90000) {
+                  delete mergedDevs[devId];
+                }
+              });
+              setConnectedDevicesMap(mergedDevs);
             } else if ((data.type === 'SYNC_STATE' || data.type === 'STATE_UPDATED') && data.state) {
               applyServerState(data.state);
             } else if (data.type === 'PONG') {
@@ -1700,7 +1792,7 @@ export const LabProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
         }
       } catch (err: any) {
         if (err?.code === 'resource-exhausted') {
-          firestoreBlockedUntilRef.current = Date.now() + 5 * 60 * 1000;
+          firestoreBlockedUntilRef.current = Date.now() + 30 * 1000;
         }
         console.debug('Firestore initial load notice:', err?.message || err);
       }
@@ -1730,17 +1822,19 @@ export const LabProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
     window.addEventListener('online', forceSyncMaster);
     document.addEventListener('visibilitychange', handleFocusSync);
 
-    // Adaptive polling: if WebSocket is connected, poll every 5s; otherwise every 2.5s
+    // Adaptive conditional polling with ?since: lightweight 30-byte checks
+    const pollInterval = wsRef.current && wsRef.current.readyState === WebSocket.OPEN ? 15000 : 4000;
     const interval = setInterval(() => {
-      fetch('/api/sync/state')
+      const since = lastSyncTimestampRef.current;
+      fetch(`/api/sync/state?since=${since}`)
         .then(res => res.json())
         .then(data => {
-          if (data.success && data.state) {
+          if (data.success && !data.notModified && data.state) {
             applyServerState(data.state);
           }
         })
         .catch(() => {});
-    }, wsRef.current && wsRef.current.readyState === WebSocket.OPEN ? 5000 : 2500);
+    }, pollInterval);
 
     return () => {
       window.removeEventListener('focus', handleFocusSync);
@@ -3783,26 +3877,74 @@ export const LabProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
     course?: CourseType;
     email?: string;
     notes?: string; 
-  }) => {
+  }): { success: boolean; message: string; student: Student; deviceBlocked?: boolean } => {
+    const cleanName = (studentData.name || '').trim();
+    const cleanRa = (studentData.registrationNumber || '').trim().toUpperCase();
+
+    if (!cleanName || !cleanRa) {
+      playBeep('alert');
+      return {
+        success: false,
+        message: 'Preencha o Nome Completo e a Matrícula / RA do aluno.',
+        student: null as any,
+      };
+    }
+
     const targetClassId = studentData.classGroupId || selectedClassId || classes[0]?.id || 'class-default';
     const targetClass = classes.find(c => c.id === targetClassId);
 
-    const newStudent: Student = {
-      id: `std-auto-${Date.now()}`,
-      name: studentData.name.trim(),
-      registrationNumber: studentData.registrationNumber.trim().toUpperCase(),
-      course: studentData.course || targetClass?.course || 'Medicina',
-      discipline: targetClass?.discipline || 'BMF4',
-      classGroupId: targetClassId,
-      email: studentData.email || `${studentData.name.toLowerCase().replace(/[^a-z0-9]/g, '').slice(0, 15)}@uni9.edu.br`,
-      notes: studentData.notes ? `[Auto-Cadastro] ${studentData.notes}` : '[Auto-Cadastro na Chamada]',
-      presences: 1,
-      absences: 0,
-      lates: 0,
-      excused: 0,
-    };
+    // Check if student with this RA already exists
+    const cleanRaDigits = cleanRa.replace(/\D/g, '');
+    const existingIndex = students.findIndex(s => {
+      const sRa = (s.registrationNumber || '').toUpperCase();
+      const sRaDigits = sRa.replace(/\D/g, '');
+      return sRa === cleanRa || (cleanRaDigits.length >= 4 && sRaDigits === cleanRaDigits);
+    });
 
-    const updatedStudents = [newStudent, ...students];
+    let studentToUse: Student;
+    let updatedStudents: Student[];
+
+    if (existingIndex >= 0) {
+      const existing = students[existingIndex];
+      studentToUse = {
+        ...existing,
+        name: cleanName || existing.name,
+        registrationNumber: cleanRa || existing.registrationNumber,
+        classGroupId: targetClassId,
+        course: studentData.course || targetClass?.course || existing.course || 'Medicina',
+        discipline: targetClass?.discipline || existing.discipline || 'BMF4',
+        email: existing.email || studentData.email || `${cleanName.toLowerCase().replace(/[^a-z0-9]/g, '').slice(0, 15)}@uni9.edu.br`,
+      };
+      updatedStudents = [...students];
+      updatedStudents[existingIndex] = studentToUse;
+    } else {
+      studentToUse = {
+        id: `std-auto-${Date.now()}-${Math.random().toString(36).substring(2, 6)}`,
+        name: cleanName,
+        registrationNumber: cleanRa,
+        course: studentData.course || targetClass?.course || 'Medicina',
+        discipline: targetClass?.discipline || 'BMF4',
+        classGroupId: targetClassId,
+        email: studentData.email || `${cleanName.toLowerCase().replace(/[^a-z0-9]/g, '').slice(0, 15)}@uni9.edu.br`,
+        notes: studentData.notes ? `[Auto-Cadastro] ${studentData.notes}` : '[Auto-Cadastro na Chamada]',
+        presences: 1,
+        absences: 0,
+        lates: 0,
+        excused: 0,
+      };
+      updatedStudents = [studentToUse, ...students];
+    }
+
+    // Ensure student is NOT in deletedStudentIds tombstone list
+    if (deletedStudentIdsRef.current.includes(studentToUse.id)) {
+      const newDeletedIds = deletedStudentIdsRef.current.filter(id => id !== studentToUse.id);
+      setDeletedStudentIds(newDeletedIds);
+      deletedStudentIdsRef.current = newDeletedIds;
+      try {
+        localStorage.setItem(STORAGE_PREFIX + 'deleted_student_ids', JSON.stringify(newDeletedIds));
+      } catch {}
+    }
+
     setStudents(updatedStudents);
     try {
       localStorage.setItem(STORAGE_PREFIX + 'students', JSON.stringify(updatedStudents));
@@ -3820,8 +3962,8 @@ export const LabProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
             ...s,
             attendance: {
               ...s.attendance,
-              [newStudent.id]: {
-                studentId: newStudent.id,
+              [studentToUse.id]: {
+                studentId: studentToUse.id,
                 status: 'present',
                 period1Status: currentPeriod === '2' ? 'absent' : 'present',
                 period2Status: currentPeriod === '1' ? 'absent' : 'present',
@@ -3861,6 +4003,7 @@ export const LabProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
       classes,
       students: recomputedStudents,
       sessions: updatedSessions,
+      deletedStudentIds: deletedStudentIdsRef.current,
       justifications,
       studentGrades,
       appSettings,
@@ -3872,8 +4015,8 @@ export const LabProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
       enqueueOutboxItem({
         eventType: 'RECORD_ATTENDANCE',
         sessionId: activeSession.id,
-        studentId: newStudent.id,
-        studentName: newStudent.name,
+        studentId: studentToUse.id,
+        studentName: studentToUse.name,
         classGroupId: targetClassId,
         status: 'present',
         period: activeSession.activePeriod || '1',
@@ -3884,8 +4027,12 @@ export const LabProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
       });
     }
 
-    playBeep('success');
-    return newStudent;
+    playBeep('student_added');
+    return {
+      success: true,
+      message: `✓ Aluno(a) "${studentToUse.name}" cadastrado(a) e presença confirmada!`,
+      student: studentToUse,
+    };
   };
 
   // CRUD Professors & Auth
@@ -4591,6 +4738,13 @@ export const LabProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
       localStorage.setItem(STORAGE_PREFIX + 'students', JSON.stringify(updatedStudents));
     } catch {}
 
+    const newDeletedStudentIds = Array.from(new Set([...deletedStudentIdsRef.current, id]));
+    setDeletedStudentIds(newDeletedStudentIds);
+    deletedStudentIdsRef.current = newDeletedStudentIds;
+    try {
+      localStorage.setItem(STORAGE_PREFIX + 'deleted_student_ids', JSON.stringify(newDeletedStudentIds));
+    } catch {}
+
     const updatedSessions = sessions.map(s => {
       if (s.attendance && s.attendance[id]) {
         const newAtt = { ...s.attendance };
@@ -4618,12 +4772,24 @@ export const LabProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
       classes,
       students: updatedStudents,
       sessions: updatedSessions,
+      deletedStudentIds: newDeletedStudentIds,
       justifications: updatedJustifications,
       studentGrades,
       appSettings,
       selectedClassId,
       lastUpdated: now,
     });
+
+    fetch('/api/students/delete', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        studentId: id,
+        senderClientId: clientIdRef.current,
+      }),
+    }).catch(err => console.debug('Student delete API call:', err));
+
+    playBeep('alert');
   };
 
   const deleteMultipleStudents = (ids: string[]) => {
@@ -4632,6 +4798,13 @@ export const LabProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
     setStudents(updatedStudents);
     try {
       localStorage.setItem(STORAGE_PREFIX + 'students', JSON.stringify(updatedStudents));
+    } catch {}
+
+    const newDeletedStudentIds = Array.from(new Set([...deletedStudentIdsRef.current, ...ids]));
+    setDeletedStudentIds(newDeletedStudentIds);
+    deletedStudentIdsRef.current = newDeletedStudentIds;
+    try {
+      localStorage.setItem(STORAGE_PREFIX + 'deleted_student_ids', JSON.stringify(newDeletedStudentIds));
     } catch {}
 
     const updatedSessions = sessions.map(s => {
@@ -4669,21 +4842,40 @@ export const LabProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
       classes,
       students: updatedStudents,
       sessions: updatedSessions,
+      deletedStudentIds: newDeletedStudentIds,
       justifications: updatedJustifications,
       studentGrades,
       appSettings,
       selectedClassId,
       lastUpdated: now,
     });
+
+    fetch('/api/students/delete', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        studentIds: ids,
+        senderClientId: clientIdRef.current,
+      }),
+    }).catch(err => console.debug('Students batch delete API call:', err));
+
     playBeep('alert');
   };
 
   const deleteAllStudentsFromClass = (classId: string) => {
     const studentIdsToRemove = new Set<string>(students.filter(s => s.classGroupId === classId).map(s => s.id));
+    const studentIdsArr = Array.from(studentIdsToRemove);
     const updatedStudents = students.filter(s => s.classGroupId !== classId);
     setStudents(updatedStudents);
     try {
       localStorage.setItem(STORAGE_PREFIX + 'students', JSON.stringify(updatedStudents));
+    } catch {}
+
+    const newDeletedStudentIds = Array.from(new Set([...deletedStudentIdsRef.current, ...studentIdsArr]));
+    setDeletedStudentIds(newDeletedStudentIds);
+    deletedStudentIdsRef.current = newDeletedStudentIds;
+    try {
+      localStorage.setItem(STORAGE_PREFIX + 'deleted_student_ids', JSON.stringify(newDeletedStudentIds));
     } catch {}
 
     const updatedSessions = sessions.map(s => {
@@ -4724,20 +4916,42 @@ export const LabProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
       classes,
       students: updatedStudents,
       sessions: updatedSessions,
+      deletedStudentIds: newDeletedStudentIds,
       justifications: updatedJustifications,
       studentGrades,
       appSettings,
       selectedClassId,
       lastUpdated: now,
     });
+
+    fetch('/api/students/delete', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        classGroupId: classId,
+        all: true,
+        studentIds: studentIdsArr,
+        senderClientId: clientIdRef.current,
+      }),
+    }).catch(err => console.debug('Students delete all from class API call:', err));
+
     playBeep('alert');
   };
 
   const clearAllStudents = () => {
+    const allIds = students.map(s => s.id);
     setStudents([]);
     try {
       localStorage.setItem(STORAGE_PREFIX + 'students', '[]');
     } catch {}
+
+    const newDeletedStudentIds = Array.from(new Set([...deletedStudentIdsRef.current, ...allIds]));
+    setDeletedStudentIds(newDeletedStudentIds);
+    deletedStudentIdsRef.current = newDeletedStudentIds;
+    try {
+      localStorage.setItem(STORAGE_PREFIX + 'deleted_student_ids', JSON.stringify(newDeletedStudentIds));
+    } catch {}
+
     const updatedSessions = sessions.map(s => ({ ...s, attendance: {} }));
     setSessions(updatedSessions);
     try {
@@ -4756,12 +4970,23 @@ export const LabProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
       classes,
       students: [],
       sessions: updatedSessions,
+      deletedStudentIds: newDeletedStudentIds,
       justifications: [],
       studentGrades,
       appSettings,
       selectedClassId,
       lastUpdated: now,
     });
+
+    fetch('/api/students/delete', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        studentIds: allIds,
+        senderClientId: clientIdRef.current,
+      }),
+    }).catch(err => console.debug('Students clear all API call:', err));
+
     playBeep('alert');
   };
 
@@ -4870,10 +5095,26 @@ export const LabProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
       } catch {}
     }
 
+    const newDeletedClassIds = Array.from(new Set([...deletedClassIdsRef.current, id]));
+    setDeletedClassIds(newDeletedClassIds);
+    deletedClassIdsRef.current = newDeletedClassIds;
+    try {
+      localStorage.setItem(STORAGE_PREFIX + 'deleted_class_ids', JSON.stringify(newDeletedClassIds));
+    } catch {}
+
     const sortedClasses = sortClassesAlphabetically(remainingClasses);
     setClasses(sortedClasses);
     try {
       localStorage.setItem(STORAGE_PREFIX + 'classes', JSON.stringify(sortedClasses));
+    } catch {}
+
+    const removedSessions = sessions.filter(s => s.classGroupId === id);
+    const removedSessionIds = removedSessions.map(s => s.id);
+    const newDeletedSessionIds = Array.from(new Set([...deletedSessionIdsRef.current, ...removedSessionIds]));
+    setDeletedSessionIds(newDeletedSessionIds);
+    deletedSessionIdsRef.current = newDeletedSessionIds;
+    try {
+      localStorage.setItem(STORAGE_PREFIX + 'deleted_session_ids', JSON.stringify(newDeletedSessionIds));
     } catch {}
 
     const updatedSessions = sessions.filter(s => s.classGroupId !== id);
@@ -4884,8 +5125,18 @@ export const LabProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
 
     let updatedStudents = students;
     let updatedJustifications = justifications;
+    let newDeletedStudentIds = deletedStudentIdsRef.current;
+
     if (deleteAssociatedStudents) {
-      const removedStudentIds = new Set(students.filter(s => s.classGroupId === id).map(s => s.id));
+      const removedStudentsList = students.filter(s => s.classGroupId === id);
+      const removedStudentIds = new Set(removedStudentsList.map(s => s.id));
+      newDeletedStudentIds = Array.from(new Set([...deletedStudentIdsRef.current, ...Array.from(removedStudentIds)]));
+      setDeletedStudentIds(newDeletedStudentIds);
+      deletedStudentIdsRef.current = newDeletedStudentIds;
+      try {
+        localStorage.setItem(STORAGE_PREFIX + 'deleted_student_ids', JSON.stringify(newDeletedStudentIds));
+      } catch {}
+
       updatedJustifications = justifications.filter(j => !removedStudentIds.has(j.studentId));
       setJustifications(updatedJustifications);
       try {
@@ -4907,12 +5158,26 @@ export const LabProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
       classes: sortedClasses,
       students: updatedStudents,
       sessions: updatedSessions,
+      deletedClassIds: newDeletedClassIds,
+      deletedStudentIds: newDeletedStudentIds,
+      deletedSessionIds: newDeletedSessionIds,
       justifications: updatedJustifications,
       studentGrades,
       appSettings,
       selectedClassId: nextClassId,
       lastUpdated: now,
     });
+
+    fetch('/api/classes/delete', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        classId: id,
+        deleteAssociatedStudents,
+        senderClientId: clientIdRef.current,
+      }),
+    }).catch(err => console.debug('Class delete API call:', err));
+
     playBeep('alert');
   };
 
@@ -4969,7 +5234,7 @@ export const LabProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
       date: sessionDate,
       startTime: `${String(new Date(uniqueTs).getHours()).padStart(2, '0')}:${String(new Date(uniqueTs).getMinutes()).padStart(2, '0')}`,
       endTime: '12:00',
-      topic: topic || (isActivity ? getActivityTypeLabel(actType) : 'Aula BMF4 - Morfofuncional'),
+      topic: topic || (isActivity ? 'Atividade Prática BMF4' : 'Aula BMF4 - Morfofuncional'),
       anatomicalSpecimens: (isOptionsObj && optionsOrTopic.specimens) ? optionsOrTopic.specimens : (specimens && specimens.length > 0 ? specimens : ['Peças anatômicas / Roteiro prático']),
       checkinCode: freshDynamicToken,
       isLive: true,
@@ -5732,6 +5997,9 @@ export const LabProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
     localStorage.removeItem(STORAGE_PREFIX + 'students');
     localStorage.removeItem(STORAGE_PREFIX + 'sessions');
     localStorage.removeItem(STORAGE_PREFIX + 'deleted_session_ids');
+    localStorage.removeItem(STORAGE_PREFIX + 'deleted_professor_ids');
+    localStorage.removeItem(STORAGE_PREFIX + 'deleted_student_ids');
+    localStorage.removeItem(STORAGE_PREFIX + 'deleted_class_ids');
     localStorage.removeItem(STORAGE_PREFIX + 'justifications');
     localStorage.removeItem(STORAGE_PREFIX + 'settings');
     localStorage.removeItem(STORAGE_PREFIX + 'student_grades');
@@ -5746,6 +6014,12 @@ export const LabProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
     setSessions(INITIAL_SESSIONS);
     setDeletedSessionIds([]);
     deletedSessionIdsRef.current = [];
+    setDeletedProfessorIds([]);
+    deletedProfessorIdsRef.current = [];
+    setDeletedStudentIds([]);
+    deletedStudentIdsRef.current = [];
+    setDeletedClassIds([]);
+    deletedClassIdsRef.current = [];
     setJustifications(INITIAL_JUSTIFICATIONS);
     setAppSettings(DEFAULT_SETTINGS);
     setStudentGrades(INITIAL_STUDENT_GRADES);
@@ -5762,6 +6036,9 @@ export const LabProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
       students: INITIAL_STUDENTS,
       sessions: INITIAL_SESSIONS,
       deletedSessionIds: [],
+      deletedProfessorIds: [],
+      deletedStudentIds: [],
+      deletedClassIds: [],
       justifications: INITIAL_JUSTIFICATIONS,
       appSettings: DEFAULT_SETTINGS,
       studentGrades: INITIAL_STUDENT_GRADES,
@@ -5852,6 +6129,7 @@ export const LabProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
         addProfessor,
         updateProfessor,
         deleteProfessor,
+        deletedProfessorIds,
         addStudent,
         addMultipleStudents,
         updateStudent,
@@ -5859,16 +6137,19 @@ export const LabProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
         deleteMultipleStudents,
         deleteAllStudentsFromClass,
         clearAllStudents,
+        deletedStudentIds,
         addClassGroup,
         updateClassGroup,
         deleteClassGroup,
+        deletedClassIds,
         startNewSession,
         updateSession,
         deleteSession,
         deleteMultipleSessions,
+        deleteAllSessionsForClass,
+        deletedSessionIds,
         updateSessionAttendance,
         deleteSessionAttendance,
-        deleteAllSessionsForClass,
         resetSessionAttendance,
         handleJustificationStatus,
         submitJustification,

@@ -26,6 +26,8 @@ interface ServerDatabase {
   sessions: any[];
   deletedSessionIds?: string[];
   deletedProfessorIds?: string[];
+  deletedStudentIds?: string[];
+  deletedClassIds?: string[];
   justifications: any[];
   studentGrades: any[];
   appSettings: any;
@@ -46,6 +48,8 @@ function getInitialDbState(): ServerDatabase {
     sessions: INITIAL_SESSIONS || [],
     deletedSessionIds: [],
     deletedProfessorIds: [],
+    deletedStudentIds: [],
+    deletedClassIds: [],
     justifications: INITIAL_JUSTIFICATIONS || [],
     studentGrades: INITIAL_STUDENT_GRADES || [],
     appSettings: DEFAULT_SETTINGS,
@@ -71,10 +75,23 @@ function loadDatabase(): ServerDatabase {
         if (ts > 4000000000000 || isNaN(ts)) {
           ts = 1;
         }
+        const deletedStudentIds = Array.isArray(parsed.deletedStudentIds) ? parsed.deletedStudentIds : [];
+        const deletedStudentSet = new Set(deletedStudentIds);
+        const filteredStudents = (parsed.students || []).filter((s: any) => s && s.id && !deletedStudentSet.has(s.id));
+
+        const deletedClassIds = Array.isArray(parsed.deletedClassIds) ? parsed.deletedClassIds : [];
+        const deletedClassSet = new Set(deletedClassIds);
+        const filteredClasses = (parsed.classes || []).filter((c: any) => c && c.id && !deletedClassSet.has(c.id));
+
         return {
           ...getInitialDbState(),
           ...parsed,
+          students: filteredStudents,
+          classes: filteredClasses,
           deletedSessionIds: Array.isArray(parsed.deletedSessionIds) ? parsed.deletedSessionIds : [],
+          deletedProfessorIds: Array.isArray(parsed.deletedProfessorIds) ? parsed.deletedProfessorIds : [],
+          deletedStudentIds,
+          deletedClassIds,
           lastUpdated: ts,
         };
       }
@@ -90,14 +107,48 @@ function loadDatabase(): ServerDatabase {
 
 let dbState: ServerDatabase = loadDatabase();
 
-function saveDatabase(state: ServerDatabase) {
+let saveDbTimeout: NodeJS.Timeout | null = null;
+let isSaving = false;
+let pendingSaveState: ServerDatabase | null = null;
+
+async function executeSave() {
+  if (!pendingSaveState || isSaving) return;
+  isSaving = true;
+  const stateToSave = pendingSaveState;
+  pendingSaveState = null;
   try {
     if (!fs.existsSync(DB_DIR)) {
       fs.mkdirSync(DB_DIR, { recursive: true });
     }
-    fs.writeFileSync(DB_FILE, JSON.stringify(state, null, 2), "utf-8");
+    const json = JSON.stringify(stateToSave);
+    const tempFile = `${DB_FILE}.${Date.now()}.${Math.random().toString(36).substring(2, 7)}.tmp`;
+    await fs.promises.writeFile(tempFile, json, "utf-8");
+    await fs.promises.rename(tempFile, DB_FILE);
   } catch (err) {
     console.error("Error saving database file:", err);
+  } finally {
+    isSaving = false;
+    if (pendingSaveState) {
+      executeSave();
+    }
+  }
+}
+
+function saveDatabase(state: ServerDatabase, immediate = false) {
+  pendingSaveState = state;
+  if (immediate) {
+    if (saveDbTimeout) {
+      clearTimeout(saveDbTimeout);
+      saveDbTimeout = null;
+    }
+    executeSave();
+    return;
+  }
+  if (!saveDbTimeout) {
+    saveDbTimeout = setTimeout(() => {
+      saveDbTimeout = null;
+      executeSave();
+    }, 250);
   }
 }
 
@@ -190,17 +241,18 @@ function mergeSessions(
   return Array.from(resultMap.values());
 }
 
-function mergeStudents(currentStudents: any[], incomingStudents: any[]): any[] {
+function mergeStudents(currentStudents: any[], incomingStudents: any[], deletedIds: string[] = []): any[] {
+  const deletedSet = new Set(deletedIds || []);
   if (!Array.isArray(incomingStudents) || incomingStudents.length === 0) {
-    return currentStudents || [];
+    return (currentStudents || []).filter((st: any) => st && st.id && !deletedSet.has(st.id));
   }
   const resultMap = new Map<string, any>();
   (currentStudents || []).forEach((st: any) => {
-    if (st && st.id) resultMap.set(st.id, { ...st });
+    if (st && st.id && !deletedSet.has(st.id)) resultMap.set(st.id, { ...st });
   });
 
   incomingStudents.forEach((inc: any) => {
-    if (!inc || !inc.id) return;
+    if (!inc || !inc.id || deletedSet.has(inc.id)) return;
     const existing = resultMap.get(inc.id);
     if (!existing) {
       resultMap.set(inc.id, { ...inc });
@@ -215,17 +267,18 @@ function mergeStudents(currentStudents: any[], incomingStudents: any[]): any[] {
   return Array.from(resultMap.values());
 }
 
-function mergeClasses(currentClasses: any[], incomingClasses: any[]): any[] {
+function mergeClasses(currentClasses: any[], incomingClasses: any[], deletedIds: string[] = []): any[] {
+  const deletedSet = new Set(deletedIds || []);
   if (!Array.isArray(incomingClasses) || incomingClasses.length === 0) {
-    return currentClasses || [];
+    return (currentClasses || []).filter((c: any) => c && c.id && !deletedSet.has(c.id));
   }
   const resultMap = new Map<string, any>();
   (currentClasses || []).forEach((c: any) => {
-    if (c && c.id) resultMap.set(c.id, { ...c });
+    if (c && c.id && !deletedSet.has(c.id)) resultMap.set(c.id, { ...c });
   });
 
   incomingClasses.forEach((inc: any) => {
-    if (!inc || !inc.id) return;
+    if (!inc || !inc.id || deletedSet.has(inc.id)) return;
     const existing = resultMap.get(inc.id);
     if (!existing) {
       resultMap.set(inc.id, { ...inc });
@@ -398,14 +451,24 @@ function mergeState(current: ServerDatabase, incoming: any): ServerDatabase {
     ...(Array.isArray(incoming.deletedProfessorIds) ? incoming.deletedProfessorIds : [])
   ]));
 
+  const mergedDeletedStudentIds = Array.from(new Set([
+    ...(current.deletedStudentIds || []),
+    ...(Array.isArray(incoming.deletedStudentIds) ? incoming.deletedStudentIds : [])
+  ]));
+
+  const mergedDeletedClassIds = Array.from(new Set([
+    ...(current.deletedClassIds || []),
+    ...(Array.isArray(incoming.deletedClassIds) ? incoming.deletedClassIds : [])
+  ]));
+
   // If user mutation is explicitly sent (e.g. user added/deleted students, classes, professors), adopt the explicit user state
   const professors = incoming.userMutation && Array.isArray(incoming.professors)
     ? incoming.professors.filter((p: any) => p && p.id && !mergedDeletedProfessorIds.includes(p.id))
     : mergeProfessors(current.professors, incoming.professors, mergedDeletedProfessorIds);
 
   const classes = incoming.userMutation && Array.isArray(incoming.classes)
-    ? incoming.classes
-    : mergeClasses(current.classes, incoming.classes);
+    ? incoming.classes.filter((c: any) => c && c.id && !mergedDeletedClassIds.includes(c.id))
+    : mergeClasses(current.classes, incoming.classes, mergedDeletedClassIds);
 
   // Critical fix: When user deleted sessions (userMutation: true), strictly adopt the filtered list without reviving deleted sessions!
   const sessions = incoming.userMutation && Array.isArray(incoming.sessions)
@@ -413,8 +476,8 @@ function mergeState(current: ServerDatabase, incoming: any): ServerDatabase {
     : mergeSessions(current.sessions, incoming.sessions, mergedDeletedSessionIds);
 
   const rawStudents = incoming.userMutation && Array.isArray(incoming.students)
-    ? incoming.students
-    : mergeStudents(current.students, incoming.students);
+    ? incoming.students.filter((st: any) => st && st.id && !mergedDeletedStudentIds.includes(st.id))
+    : mergeStudents(current.students, incoming.students, mergedDeletedStudentIds);
   const students = recalculateStudentStats(rawStudents, sessions);
 
   const justifications = incoming.userMutation && Array.isArray(incoming.justifications)
@@ -465,6 +528,8 @@ function mergeState(current: ServerDatabase, incoming: any): ServerDatabase {
     sessions,
     deletedSessionIds: mergedDeletedSessionIds,
     deletedProfessorIds: mergedDeletedProfessorIds,
+    deletedStudentIds: mergedDeletedStudentIds,
+    deletedClassIds: mergedDeletedClassIds,
     justifications,
     studentGrades,
     appSettings,
@@ -485,6 +550,20 @@ async function startServer() {
   // WebSocket Server for instant multi-device live synchronization
   const wss = new WebSocketServer({ server, path: "/ws" });
 
+  const broadcastDevices = () => {
+    const payload = JSON.stringify({
+      type: "DEVICES_UPDATED",
+      devices: dbState.connectedDevices,
+      totalConnected: wss.clients.size,
+      timestamp: Date.now(),
+    });
+    wss.clients.forEach((client) => {
+      if (client.readyState === WebSocket.OPEN) {
+        client.send(payload);
+      }
+    });
+  };
+
   const broadcastState = (senderWs?: WebSocket, customType = "SYNC_STATE", senderClientId?: string) => {
     const payload = JSON.stringify({
       type: customType,
@@ -494,7 +573,7 @@ async function startServer() {
     });
 
     wss.clients.forEach((client) => {
-      if (client.readyState === WebSocket.OPEN) {
+      if (client.readyState === WebSocket.OPEN && client !== senderWs) {
         client.send(payload);
       }
     });
@@ -526,7 +605,7 @@ async function startServer() {
                 isOnline: true,
               },
             };
-            broadcastState(undefined, "DEVICES_UPDATED");
+            broadcastDevices();
           }
         } else if (data.type === "GET_STATE") {
           ws.send(
@@ -543,7 +622,7 @@ async function startServer() {
           broadcastState(ws, "STATE_UPDATED", senderClientId);
         } else if (data.type === "RESET_STATE") {
           dbState = getInitialDbState();
-          saveDatabase(dbState);
+          saveDatabase(dbState, true);
           broadcastState(undefined, "SYNC_STATE");
         }
       } catch (err) {
@@ -574,9 +653,22 @@ async function startServer() {
   });
 
   app.get("/api/sync/state", (req, res) => {
+    const since = Number(req.query.since);
+    if (since && dbState.lastUpdated && dbState.lastUpdated <= since) {
+      return res.json({
+        success: true,
+        notModified: true,
+        lastUpdated: dbState.lastUpdated,
+        connectedDevices: wss.clients.size,
+        timestamp: Date.now(),
+      });
+    }
+
     res.json({
       success: true,
+      notModified: false,
       state: dbState,
+      lastUpdated: dbState.lastUpdated,
       connectedDevices: wss.clients.size,
       timestamp: Date.now(),
     });
@@ -708,6 +800,121 @@ async function startServer() {
     } catch (err) {
       console.error("Failed to delete professor via API:", err);
       return res.status(500).json({ error: "Failed to delete professor" });
+    }
+  });
+
+  // Dedicated endpoint for reliable single/batch student deletion
+  app.post("/api/students/delete", (req, res) => {
+    try {
+      const { studentId, studentIds, classGroupId, all, senderClientId } = req.body || {};
+      let idsToDelete: string[] = [];
+
+      if (Array.isArray(studentIds) && studentIds.length > 0) {
+        idsToDelete = studentIds.map(String);
+      } else if (studentId) {
+        idsToDelete = [String(studentId)];
+      } else if (all && classGroupId) {
+        idsToDelete = (dbState.students || [])
+          .filter((s: any) => s && s.classGroupId === classGroupId)
+          .map((s: any) => s.id);
+      }
+
+      if (idsToDelete.length === 0) {
+        return res.json({ success: true, message: "No students to delete", deletedCount: 0, state: dbState });
+      }
+
+      const toDeleteSet = new Set(idsToDelete);
+      dbState.students = (dbState.students || []).filter((s: any) => s && !toDeleteSet.has(s.id));
+      
+      const newDeletedIds = Array.from(new Set([
+        ...(dbState.deletedStudentIds || []),
+        ...idsToDelete
+      ]));
+      dbState.deletedStudentIds = newDeletedIds;
+
+      // Clean attendance in sessions for deleted students
+      if (Array.isArray(dbState.sessions)) {
+        dbState.sessions = dbState.sessions.map((sess: any) => {
+          if (sess && sess.attendance) {
+            let changed = false;
+            const newAtt = { ...sess.attendance };
+            idsToDelete.forEach((id) => {
+              if (newAtt[id]) {
+                delete newAtt[id];
+                changed = true;
+              }
+            });
+            if (changed) {
+              return { ...sess, attendance: newAtt };
+            }
+          }
+          return sess;
+        });
+      }
+
+      // Clean justifications
+      if (Array.isArray(dbState.justifications)) {
+        dbState.justifications = dbState.justifications.filter((j: any) => j && !toDeleteSet.has(j.studentId));
+      }
+
+      // Recalculate stats for remaining students
+      dbState.students = recalculateStudentStats(dbState.students, dbState.sessions);
+      dbState.lastUpdated = Date.now();
+
+      saveDatabase(dbState);
+      broadcastState(undefined, "STATE_UPDATED", senderClientId);
+
+      return res.json({
+        success: true,
+        deletedCount: idsToDelete.length,
+        deletedStudentIds: idsToDelete,
+        state: dbState
+      });
+    } catch (err) {
+      console.error("Failed to delete student(s) via API:", err);
+      return res.status(500).json({ error: "Failed to delete student(s)" });
+    }
+  });
+
+  // Dedicated endpoint for reliable class deletion
+  app.post("/api/classes/delete", (req, res) => {
+    try {
+      const { classId, deleteAssociatedStudents, senderClientId } = req.body || {};
+      if (!classId) {
+        return res.status(400).json({ error: "classId is required" });
+      }
+      const toDeleteClassId = String(classId);
+      dbState.classes = (dbState.classes || []).filter((c: any) => c && c.id !== toDeleteClassId);
+      dbState.deletedClassIds = Array.from(new Set([...(dbState.deletedClassIds || []), toDeleteClassId]));
+
+      if (deleteAssociatedStudents) {
+        const removedStudents = (dbState.students || []).filter((s: any) => s && s.classGroupId === toDeleteClassId);
+        const removedStudentIds = removedStudents.map((s: any) => s.id);
+        const removedStudentSet = new Set(removedStudentIds);
+        dbState.students = (dbState.students || []).filter((s: any) => s && !removedStudentSet.has(s.id));
+        dbState.deletedStudentIds = Array.from(new Set([...(dbState.deletedStudentIds || []), ...removedStudentIds]));
+
+        if (Array.isArray(dbState.justifications)) {
+          dbState.justifications = dbState.justifications.filter((j: any) => j && !removedStudentSet.has(j.studentId));
+        }
+      }
+
+      // Also remove sessions for this class
+      const removedSessions = (dbState.sessions || []).filter((s: any) => s && s.classGroupId === toDeleteClassId);
+      const removedSessionIds = removedSessions.map((s: any) => s.id);
+      dbState.sessions = (dbState.sessions || []).filter((s: any) => s && s.classGroupId !== toDeleteClassId);
+      dbState.deletedSessionIds = Array.from(new Set([...(dbState.deletedSessionIds || []), ...removedSessionIds]));
+
+      dbState.students = recalculateStudentStats(dbState.students, dbState.sessions);
+      dbState.lastUpdated = Date.now();
+
+      saveDatabase(dbState);
+      broadcastState(undefined, "STATE_UPDATED", senderClientId);
+
+      return res.json({ success: true, state: dbState });
+    } catch (err) {
+      console.error("Failed to delete class via API:", err);
+      return res.status(500).json({ error: "Failed to delete class" });
     }
   });
 

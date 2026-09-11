@@ -276,15 +276,14 @@ export const LabProjectionScreen: React.FC<LabProjectionScreenProps> = ({
 
   const rotationInterval = appSettings.tokenRotationSeconds || 10;
 
-  // Real-time clock with milliseconds
+  // Real-time clock updated every second (prevents excessive re-renders)
   useEffect(() => {
     const updateTime = () => {
       const now = new Date();
       setCurrentTime(now.toLocaleTimeString('pt-BR', { hour: '2-digit', minute: '2-digit', second: '2-digit' }));
-      setMillisecondCounter(String(Math.floor(now.getMilliseconds() / 10)).padStart(2, '0'));
     };
     updateTime();
-    const interval = setInterval(updateTime, 100);
+    const interval = setInterval(updateTime, 1000);
     return () => clearInterval(interval);
   }, []);
 
@@ -798,11 +797,9 @@ export const LabProjectionScreen: React.FC<LabProjectionScreenProps> = ({
                   <span className={`inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-[10px] font-bold border ${
                     effectiveSession.labLocation === 'anatomia' 
                       ? 'bg-amber-500/20 text-amber-300 border-amber-500/40' 
-                      : effectiveSession.labLocation === 'histologia'
-                      ? 'bg-indigo-500/20 text-indigo-300 border-indigo-500/40'
-                      : 'bg-emerald-500/20 text-emerald-300 border-emerald-500/40'
+                      : 'bg-indigo-500/20 text-indigo-300 border-indigo-500/40'
                   }`}>
-                    {effectiveSession.labLocation === 'anatomia' ? '🫀 Lab. Anatomia' : effectiveSession.labLocation === 'histologia' ? '🔬 Lab. Histologia' : '🫀🔬 Anato/Histo'}
+                    {effectiveSession.labLocation === 'anatomia' ? '🫀 Lab. Anatomia' : '🔬 Lab. Histologia'}
                   </span>
                 )}
               </p>

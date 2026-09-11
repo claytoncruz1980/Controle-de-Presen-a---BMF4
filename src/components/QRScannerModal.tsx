@@ -17,7 +17,8 @@ import {
   Check,
   Upload,
   Zap,
-  RotateCcw
+  RotateCcw,
+  Loader2
 } from 'lucide-react';
 import jsQR from 'jsqr';
 import { useLab } from '../context/LabContext';
@@ -70,6 +71,8 @@ export const QRScannerModal: React.FC<QRScannerModalProps> = ({
   // State for registering unknown student
   const [unknownRa, setUnknownRa] = useState('');
   const [unknownName, setUnknownName] = useState('');
+  const [unknownClassId, setUnknownClassId] = useState<string>('');
+  const [isRegistering, setIsRegistering] = useState<boolean>(false);
 
   const videoRef = useRef<HTMLVideoElement | null>(null);
   const canvasRef = useRef<HTMLCanvasElement | null>(null);
@@ -762,35 +765,88 @@ export const QRScannerModal: React.FC<QRScannerModalProps> = ({
     } else {
       playBeep('error');
       setScannedUnknownRa(cleanRa);
-      setErrorMessage(result.message || 'Aluno não localizado. Deseja cadastrá-lo agora?');
+      setUnknownRa(cleanRa);
+      setErrorMessage(result.message || `Aluno com RA ${cleanRa} não localizado na lista da turma.`);
     }
   };
 
   // Save new unknown student immediately
-  const handleSaveUnknownStudent = (e: React.FormEvent) => {
-    e.preventDefault();
-    if (!unknownName.trim() || !unknownRa.trim()) {
-      setErrorMessage('Preencha o Nome Completo e a Matrícula / RA.');
+  const handleSaveUnknownStudent = (e?: React.FormEvent) => {
+    if (e) e.preventDefault();
+    if (isRegistering) return;
+
+    const trimmedName = unknownName.trim();
+    const trimmedRa = (unknownRa || scannedUnknownRa || raInput || '').trim().toUpperCase();
+
+    if (!trimmedName) {
+      playBeep('alert');
+      setErrorMessage('Por favor, informe o Nome Completo do aluno para confirmar.');
       return;
     }
 
-    const reg = selfRegisterAndCheckin({
-      name: unknownName.trim(),
-      registrationNumber: unknownRa.trim().toUpperCase(),
-      classGroupId: selectedClassId || classes[0]?.id || '',
-    });
+    if (!trimmedRa) {
+      playBeep('alert');
+      setErrorMessage('Por favor, informe a Matrícula / RA do aluno.');
+      return;
+    }
 
-    if (reg.success) {
-      playBeep('success');
-      setSuccessResult(`✓ Aluno ${unknownName} cadastrado e com presença confirmada!`);
-      setUnknownName('');
-      setUnknownRa('');
-      setScannedUnknownRa(null);
-      setMode('camera');
-      setTimeout(() => setSuccessResult(null), 3000);
-    } else {
+    setIsRegistering(true);
+    const safeguardTimer = setTimeout(() => {
+      setIsRegistering(false);
+    }, 6000);
+
+    try {
+      const reg = selfRegisterAndCheckin({
+        name: trimmedName,
+        registrationNumber: trimmedRa,
+        classGroupId: unknownClassId || selectedClassId || classes[0]?.id || '',
+      });
+
+      clearTimeout(safeguardTimer);
+
+      if (reg && reg.success) {
+        playBeep('success');
+        if (typeof navigator !== 'undefined' && navigator.vibrate) {
+          try { navigator.vibrate([70, 35, 70]); } catch {}
+        }
+
+        const now = new Date();
+        const timeStr = `${String(now.getHours()).padStart(2, '0')}:${String(now.getMinutes()).padStart(2, '0')}`;
+        const registeredStudent = reg.student;
+
+        if (registeredStudent) {
+          setLastScannedStudent({ student: registeredStudent, time: timeStr });
+          setRecentScans(prev => [
+            {
+              id: registeredStudent.id,
+              name: registeredStudent.name,
+              ra: registeredStudent.registrationNumber,
+              time: timeStr,
+              photoUrl: registeredStudent.photoUrl
+            },
+            ...prev.filter(p => p.id !== registeredStudent.id).slice(0, 4)
+          ]);
+        }
+
+        setSuccessResult(reg.message || `✓ Aluno(a) ${trimmedName} cadastrado(a) e presença confirmada!`);
+        setErrorMessage(null);
+        setUnknownName('');
+        setUnknownRa('');
+        setScannedUnknownRa(null);
+        setRaInput('');
+        setMode('camera');
+        setTimeout(() => setSuccessResult(null), 3500);
+      } else {
+        playBeep('error');
+        setErrorMessage(reg?.message || 'Erro ao cadastrar aluno. Tente novamente.');
+      }
+    } catch (err: any) {
+      clearTimeout(safeguardTimer);
+      console.error('Registration error in QRScannerModal:', err);
       playBeep('error');
-      setErrorMessage(reg.message || 'Erro ao cadastrar aluno.');
+      setErrorMessage('Ocorreu um erro ao salvar o aluno. Tente novamente.');
+    } finally {
+      setIsRegistering(false);
     }
   };
 
@@ -933,6 +989,109 @@ export const QRScannerModal: React.FC<QRScannerModalProps> = ({
           {/* TAB 1: Real-time Camera Scanner */}
           {mode === 'camera' && (
             <div className="space-y-3">
+
+              {/* In-Place Quick Auto-Registration Card when Student is Not Found */}
+              {scannedUnknownRa && (
+                <div className="p-4 rounded-2xl bg-gradient-to-br from-emerald-50 via-teal-50 to-emerald-50 border-2 border-emerald-500 shadow-lg space-y-3 animate-in zoom-in-95">
+                  <div className="flex items-center justify-between">
+                    <div className="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-full bg-emerald-200 text-emerald-900 text-xs font-bold uppercase tracking-wider">
+                      <Sparkles className="w-3.5 h-3.5 text-emerald-700" />
+                      Aluno Não Encontrado • Cadastro Imediato
+                    </div>
+                    <button
+                      type="button"
+                      onClick={() => {
+                        setScannedUnknownRa(null);
+                        setErrorMessage(null);
+                      }}
+                      className="text-slate-400 hover:text-slate-600 p-1 text-xs font-bold cursor-pointer"
+                      title="Fechar"
+                    >
+                      ✕ Fechar
+                    </button>
+                  </div>
+
+                  <p className="text-xs text-slate-800 leading-snug">
+                    O RA <strong className="font-mono bg-white px-2 py-0.5 rounded border border-emerald-300 text-emerald-900">{scannedUnknownRa}</strong> não está cadastrado nesta turma. Preencha o nome para registrar e confirmar presença imediatamente:
+                  </p>
+
+                  <div>
+                    <label className="text-[11px] font-bold text-slate-700 block mb-1">
+                      Nome Completo do Aluno *
+                    </label>
+                    <input
+                      type="text"
+                      autoFocus
+                      value={unknownName}
+                      onChange={(e) => setUnknownName(e.target.value)}
+                      placeholder="Ex: Beatriz Silva Medeiros"
+                      className="w-full px-3.5 py-2.5 bg-white border border-emerald-400 rounded-xl text-xs sm:text-sm font-semibold text-slate-900 focus:ring-2 focus:ring-emerald-500 focus:outline-none shadow-xs"
+                      onKeyDown={(e) => {
+                        if (e.key === 'Enter') {
+                          e.preventDefault();
+                          setUnknownRa(scannedUnknownRa);
+                          handleSaveUnknownStudent(e as any);
+                        }
+                      }}
+                    />
+                  </div>
+
+                  {classes.length > 1 && (
+                    <div>
+                      <label className="text-[11px] font-bold text-slate-700 block mb-1">
+                        Turma / Disciplina
+                      </label>
+                      <select
+                        value={unknownClassId || selectedClassId || classes[0]?.id || ''}
+                        onChange={(e) => setUnknownClassId(e.target.value)}
+                        className="w-full px-3 py-2 bg-white border border-slate-300 rounded-xl text-xs font-semibold text-slate-800 focus:ring-2 focus:ring-emerald-500 focus:outline-none"
+                      >
+                        {classes.map(c => (
+                          <option key={c.id} value={c.id}>
+                            {c.discipline} - {c.name} ({c.course})
+                          </option>
+                        ))}
+                      </select>
+                    </div>
+                  )}
+
+                  <div className="flex items-center gap-2 pt-1">
+                    <button
+                      type="button"
+                      id="btn-confirmar-cadastro-camera-rapido"
+                      onClick={(e) => {
+                        setUnknownRa(scannedUnknownRa);
+                        handleSaveUnknownStudent(e as any);
+                      }}
+                      disabled={isRegistering}
+                      className="flex-1 py-3 rounded-xl bg-emerald-600 hover:bg-emerald-700 active:bg-emerald-800 text-white font-bold text-xs sm:text-sm flex items-center justify-center gap-2 shadow-md cursor-pointer transition-all active:scale-98 disabled:opacity-75"
+                    >
+                      {isRegistering ? (
+                        <>
+                          <Loader2 className="w-4 h-4 animate-spin text-white" />
+                          <span>Cadastrando & Confirmando...</span>
+                        </>
+                      ) : (
+                        <>
+                          <CheckCircle2 className="w-4 h-4" />
+                          <span>Cadastrar & Confirmar Presença</span>
+                        </>
+                      )}
+                    </button>
+
+                    <button
+                      type="button"
+                      onClick={() => {
+                        setScannedUnknownRa(null);
+                        setErrorMessage(null);
+                      }}
+                      className="px-3.5 py-3 rounded-xl bg-slate-200 hover:bg-slate-300 text-slate-700 font-bold text-xs cursor-pointer"
+                    >
+                      Descartar
+                    </button>
+                  </div>
+                </div>
+              )}
               
               {/* Scanned Student Card Pending Confirmation (Manual Mode) */}
               {scannedStudent && (
@@ -972,7 +1131,7 @@ export const QRScannerModal: React.FC<QRScannerModalProps> = ({
                       type="button"
                       id="btn-confirm-scanned-student"
                       onClick={handleConfirmScannedStudent}
-                      className="flex-1 py-2.5 rounded-xl bg-teal-700 hover:bg-teal-800 text-white font-bold text-xs sm:text-sm flex items-center justify-center gap-1.5 shadow-md active:scale-95 cursor-pointer transition-all"
+                      className="flex-1 py-2.5 rounded-xl bg-emerald-600 hover:bg-emerald-700 active:bg-emerald-800 text-white font-bold text-xs sm:text-sm flex items-center justify-center gap-1.5 shadow-md active:scale-95 cursor-pointer transition-all"
                     >
                       <Check className="w-4 h-4" />
                       Confirmar e Ler Próximo
@@ -1239,29 +1398,154 @@ export const QRScannerModal: React.FC<QRScannerModalProps> = ({
                 <UserCheck className="w-4 h-4" />
                 Localizar & Registrar Presença
               </button>
+
+              {/* In-Place Quick Auto-Registration Card when Student is Not Found in Manual Search */}
+              {scannedUnknownRa && (
+                <div className="p-4 rounded-2xl bg-gradient-to-br from-emerald-50 via-teal-50 to-emerald-50 border-2 border-emerald-500 shadow-lg space-y-3 animate-in zoom-in-95 mt-3">
+                  <div className="flex items-center justify-between">
+                    <div className="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-full bg-emerald-200 text-emerald-900 text-xs font-bold uppercase tracking-wider">
+                      <Sparkles className="w-3.5 h-3.5 text-emerald-700" />
+                      Aluno Não Encontrado • Cadastro Imediato
+                    </div>
+                    <button
+                      type="button"
+                      onClick={() => {
+                        setScannedUnknownRa(null);
+                        setErrorMessage(null);
+                      }}
+                      className="text-slate-400 hover:text-slate-600 p-1 text-xs font-bold cursor-pointer"
+                      title="Fechar"
+                    >
+                      ✕ Fechar
+                    </button>
+                  </div>
+
+                  <p className="text-xs text-slate-800 leading-snug">
+                    O RA <strong className="font-mono bg-white px-2 py-0.5 rounded border border-emerald-300 text-emerald-900">{scannedUnknownRa}</strong> não consta nesta turma. Digite o nome para cadastrar e confirmar presença:
+                  </p>
+
+                  <div>
+                    <label className="text-[11px] font-bold text-slate-700 block mb-1">
+                      Nome Completo do Aluno *
+                    </label>
+                    <input
+                      type="text"
+                      autoFocus
+                      value={unknownName}
+                      onChange={(e) => setUnknownName(e.target.value)}
+                      placeholder="Ex: Beatriz Silva Medeiros"
+                      className="w-full px-3.5 py-2.5 bg-white border border-emerald-400 rounded-xl text-xs sm:text-sm font-semibold text-slate-900 focus:ring-2 focus:ring-emerald-500 focus:outline-none shadow-xs"
+                      onKeyDown={(e) => {
+                        if (e.key === 'Enter') {
+                          e.preventDefault();
+                          setUnknownRa(scannedUnknownRa);
+                          handleSaveUnknownStudent(e as any);
+                        }
+                      }}
+                    />
+                  </div>
+
+                  {classes.length > 1 && (
+                    <div>
+                      <label className="text-[11px] font-bold text-slate-700 block mb-1">
+                        Turma / Disciplina
+                      </label>
+                      <select
+                        value={unknownClassId || selectedClassId || classes[0]?.id || ''}
+                        onChange={(e) => setUnknownClassId(e.target.value)}
+                        className="w-full px-3 py-2 bg-white border border-slate-300 rounded-xl text-xs font-semibold text-slate-800 focus:ring-2 focus:ring-emerald-500 focus:outline-none"
+                      >
+                        {classes.map(c => (
+                          <option key={c.id} value={c.id}>
+                            {c.discipline} - {c.name} ({c.course})
+                          </option>
+                        ))}
+                      </select>
+                    </div>
+                  )}
+
+                  <div className="flex items-center gap-2 pt-1">
+                    <button
+                      type="button"
+                      id="btn-confirmar-cadastro-manual-rapido"
+                      onClick={(e) => {
+                        setUnknownRa(scannedUnknownRa);
+                        handleSaveUnknownStudent(e as any);
+                      }}
+                      disabled={isRegistering}
+                      className="flex-1 py-3 rounded-xl bg-emerald-600 hover:bg-emerald-700 active:bg-emerald-800 text-white font-bold text-xs sm:text-sm flex items-center justify-center gap-2 shadow-md cursor-pointer transition-all active:scale-98 disabled:opacity-75"
+                    >
+                      {isRegistering ? (
+                        <>
+                          <Loader2 className="w-4 h-4 animate-spin text-white" />
+                          <span>Cadastrando & Confirmando...</span>
+                        </>
+                      ) : (
+                        <>
+                          <CheckCircle2 className="w-4 h-4" />
+                          <span>Cadastrar & Confirmar Presença</span>
+                        </>
+                      )}
+                    </button>
+
+                    <button
+                      type="button"
+                      onClick={() => {
+                        setScannedUnknownRa(null);
+                        setErrorMessage(null);
+                      }}
+                      className="px-3.5 py-3 rounded-xl bg-slate-200 hover:bg-slate-300 text-slate-700 font-bold text-xs cursor-pointer"
+                    >
+                      Descartar
+                    </button>
+                  </div>
+                </div>
+              )}
             </form>
           )}
 
           {/* TAB 3: Auto-Registration */}
           {mode === 'register' && (
-            <form onSubmit={handleSaveUnknownStudent} className="space-y-3">
-              <div className="p-3 rounded-2xl bg-amber-50 border border-amber-200 text-amber-900 text-xs font-medium space-y-1">
-                <div className="font-bold flex items-center gap-1.5 text-amber-800">
-                  <Sparkles className="w-3.5 h-3.5" />
-                  Auto-Cadastro Imediato no Laboratório
+            <form onSubmit={handleSaveUnknownStudent} className="space-y-3.5">
+              <div className="p-3.5 rounded-2xl bg-gradient-to-br from-emerald-50 to-teal-50 border border-emerald-200/80 text-emerald-900 text-xs font-medium space-y-1.5 shadow-xs">
+                <div className="font-bold flex items-center gap-1.5 text-emerald-800 text-sm">
+                  <Sparkles className="w-4 h-4 text-emerald-600 shrink-0" />
+                  Cadastro & Presença Imediata
                 </div>
-                <p className="text-[11px] leading-tight">
-                  Aluno novo ou não localizado na lista oficial. O cadastro salvará o aluno e já registrará a presença na sessão atual.
+                <p className="text-[11px] text-emerald-700 leading-relaxed">
+                  O aluno será registrado no sistema e sua presença será confirmada automaticamente na aula atual em andamento.
                 </p>
               </div>
 
+              {/* Class selector */}
+              {classes.length > 0 && (
+                <div className="space-y-1">
+                  <label className="text-xs font-bold text-slate-700">
+                    Turma / Disciplina
+                  </label>
+                  <select
+                    value={unknownClassId || selectedClassId || classes[0]?.id || ''}
+                    onChange={(e) => setUnknownClassId(e.target.value)}
+                    className="w-full px-3.5 py-2.5 bg-slate-50 border border-slate-300 rounded-xl text-xs sm:text-sm font-semibold text-slate-800 focus:bg-white focus:ring-2 focus:ring-teal-500 focus:outline-none"
+                  >
+                    {classes.map(c => (
+                      <option key={c.id} value={c.id}>
+                        {c.discipline} - {c.name} ({c.course})
+                      </option>
+                    ))}
+                  </select>
+                </div>
+              )}
+
               <div className="space-y-1">
-                <label className="text-xs font-bold text-slate-700">
-                  Nome Completo do Aluno *
+                <label className="text-xs font-bold text-slate-700 flex items-center justify-between">
+                  <span>Nome Completo do Aluno *</span>
+                  <span className="text-[10px] text-slate-400">Obrigatório</span>
                 </label>
                 <input
                   type="text"
                   required
+                  autoFocus
                   value={unknownName}
                   onChange={(e) => setUnknownName(e.target.value)}
                   placeholder="Ex: Beatriz Silva Medeiros"
@@ -1270,8 +1554,9 @@ export const QRScannerModal: React.FC<QRScannerModalProps> = ({
               </div>
 
               <div className="space-y-1">
-                <label className="text-xs font-bold text-slate-700">
-                  Matrícula / RA *
+                <label className="text-xs font-bold text-slate-700 flex items-center justify-between">
+                  <span>Matrícula / RA *</span>
+                  <span className="text-[10px] text-slate-400">Obrigatório</span>
                 </label>
                 <input
                   type="text"
@@ -1279,16 +1564,27 @@ export const QRScannerModal: React.FC<QRScannerModalProps> = ({
                   value={unknownRa}
                   onChange={(e) => setUnknownRa(e.target.value.toUpperCase())}
                   placeholder="Ex: 426202091"
-                  className="w-full px-3.5 py-2.5 bg-slate-50 border border-slate-300 rounded-xl text-xs sm:text-sm font-semibold uppercase tracking-wider focus:bg-white focus:ring-2 focus:ring-teal-500 focus:outline-none"
+                  className="w-full px-3.5 py-2.5 bg-slate-50 border border-slate-300 rounded-xl text-xs sm:text-sm font-semibold uppercase tracking-wider focus:bg-white focus:ring-2 focus:ring-teal-500 focus:outline-none font-mono"
                 />
               </div>
 
               <button
+                id="btn-confirmar-cadastro-novo-aluno"
                 type="submit"
-                className="w-full py-3 rounded-xl bg-emerald-600 hover:bg-emerald-700 text-white font-bold text-xs sm:text-sm shadow-md transition-all active:scale-98 flex items-center justify-center gap-2 cursor-pointer"
+                disabled={isRegistering}
+                className="w-full py-3.5 rounded-xl bg-emerald-600 hover:bg-emerald-700 active:bg-emerald-800 text-white font-bold text-xs sm:text-sm shadow-md transition-all active:scale-98 flex items-center justify-center gap-2 cursor-pointer disabled:opacity-75 disabled:cursor-wait"
               >
-                <UserPlus className="w-4 h-4" />
-                Cadastrar & Confirmar Presença
+                {isRegistering ? (
+                  <>
+                    <Loader2 className="w-4 h-4 animate-spin text-white" />
+                    <span>Cadastrando & Confirmando Presença...</span>
+                  </>
+                ) : (
+                  <>
+                    <UserPlus className="w-4 h-4" />
+                    <span>Cadastrar & Confirmar Presença</span>
+                  </>
+                )}
               </button>
             </form>
           )}
