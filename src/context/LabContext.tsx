@@ -203,7 +203,7 @@ interface LabContextType {
   deletedStudentIds: string[];
 
   // CRUD Classes
-  addClassGroup: (classGroup: Omit<ClassGroup, 'id'>) => void;
+  addClassGroup: (classGroup: Omit<ClassGroup, 'id'> & { id?: string }) => void;
   updateClassGroup: (id: string, classGroup: Partial<ClassGroup>) => void;
   deleteClassGroup: (id: string, deleteAssociatedStudents?: boolean) => void;
   restoreDefaultClasses: () => void;
@@ -5378,21 +5378,39 @@ export const LabProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
   };
 
   // CRUD Classes
-  const addClassGroup = (classData: Omit<ClassGroup, 'id'>) => {
+  const addClassGroup = (classData: Omit<ClassGroup, 'id'> & { id?: string }) => {
+    const classId = classData.id || `class-${Date.now()}`;
     const newClass: ClassGroup = {
       ...classData,
-      id: `class-${Date.now()}`,
+      id: classId,
       discipline: classData.discipline || 'BMF4 - Bases Morfofuncionais 4',
     };
-    const updatedClasses = sortClassesAlphabetically([...classes, newClass]);
+
+    const newDeleted = deletedClassIdsRef.current.filter(id => id !== classId);
+    if (newDeleted.length !== deletedClassIdsRef.current.length) {
+      setDeletedClassIds(newDeleted);
+      deletedClassIdsRef.current = newDeleted;
+      try {
+        localStorage.setItem(STORAGE_PREFIX + 'deleted_class_ids', JSON.stringify(newDeleted));
+      } catch {}
+    }
+
+    const existingIndex = classes.findIndex(c => c.id === classId);
+    let updatedClasses: ClassGroup[];
+    if (existingIndex >= 0) {
+      updatedClasses = classes.map(c => c.id === classId ? { ...c, ...newClass } : c);
+    } else {
+      updatedClasses = [...classes.filter(c => c.id !== classId), newClass];
+    }
+    updatedClasses = sortClassesAlphabetically(updatedClasses);
     setClasses(updatedClasses);
     try {
       localStorage.setItem(STORAGE_PREFIX + 'classes', JSON.stringify(updatedClasses));
     } catch {}
 
-    setSelectedClassId(newClass.id);
+    setSelectedClassId(classId);
     try {
-      localStorage.setItem(STORAGE_PREFIX + 'selectedClass', newClass.id);
+      localStorage.setItem(STORAGE_PREFIX + 'selectedClass', classId);
     } catch {}
 
     const now = Date.now();
@@ -5406,14 +5424,46 @@ export const LabProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
       justifications,
       studentGrades,
       appSettings,
-      selectedClassId: newClass.id,
+      selectedClassId: classId,
+      deletedClassIds: newDeleted,
       lastUpdated: now,
     });
     playBeep('success');
   };
 
   const updateClassGroup = (id: string, updates: Partial<ClassGroup>) => {
-    const updatedClasses = sortClassesAlphabetically(classes.map(c => c.id === id ? { ...c, ...updates } : c));
+    const newDeleted = deletedClassIdsRef.current.filter(did => did !== id);
+    if (newDeleted.length !== deletedClassIdsRef.current.length) {
+      setDeletedClassIds(newDeleted);
+      deletedClassIdsRef.current = newDeleted;
+      try {
+        localStorage.setItem(STORAGE_PREFIX + 'deleted_class_ids', JSON.stringify(newDeleted));
+      } catch {}
+    }
+
+    const exists = classes.some(c => c.id === id);
+    let updatedClasses: ClassGroup[];
+    if (!exists) {
+      const baseClass: ClassGroup = {
+        id,
+        name: updates.name || (id === BMF4_CLASS_IDS.TURMA_B ? 'Turma B' : id === BMF4_CLASS_IDS.TURMA_A ? 'Turma A' : 'Turma Nova'),
+        discipline: updates.discipline || 'BMF4 - Bases Morfofuncionais 4',
+        code: updates.code || id.toUpperCase().slice(0, 10),
+        course: 'Medicina',
+        semester: '4º Semestre 2026',
+        laboratoryRoom: 'Laboratório de Anatomia & Morfologia',
+        professorName: 'Docente Responsável',
+        professorId: 'prof-docente-2',
+        schedule: 'Horário Regular da Prática',
+        color: '#0d9488',
+        totalStudents: 0,
+        ...updates
+      };
+      updatedClasses = [...classes, baseClass];
+    } else {
+      updatedClasses = classes.map(c => c.id === id ? { ...c, ...updates } : c);
+    }
+    updatedClasses = sortClassesAlphabetically(updatedClasses);
     setClasses(updatedClasses);
     try {
       localStorage.setItem(STORAGE_PREFIX + 'classes', JSON.stringify(updatedClasses));
@@ -5431,6 +5481,7 @@ export const LabProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
       studentGrades,
       appSettings,
       selectedClassId,
+      deletedClassIds: newDeleted,
       lastUpdated: now,
     });
     playBeep('success');

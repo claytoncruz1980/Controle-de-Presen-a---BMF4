@@ -140,7 +140,7 @@ export const ClassesManagement: React.FC = () => {
         discipline: cleanDiscipline,
         code: cleanTurma.toUpperCase().slice(0, 10),
       });
-      showFeedback(`Turma "${cleanTurma}" atualizada com sucesso (ID validado contra constante imutável)!`);
+      showFeedback(`Turma "${cleanTurma}" atualizada com sucesso!`);
     } else if (editingClass) {
       updateClassGroup(editingClass.id, {
         name: cleanTurma,
@@ -151,6 +151,7 @@ export const ClassesManagement: React.FC = () => {
     } else {
       const assignedColor = colorPalette[classes.length % colorPalette.length];
       addClassGroup({
+        id: targetId,
         name: cleanTurma,
         discipline: cleanDiscipline,
         code: cleanTurma.toUpperCase().slice(0, 10),
