@@ -20,6 +20,7 @@ import {
 import { useLab } from '../context/LabContext';
 import { AttendanceStatus } from '../types';
 import { StudentAvatar } from './StudentAvatar';
+import { matchStudentClass } from '../utils/attendanceHelpers';
 
 interface LiveAttendanceProps {
   onOpenProjectionScreen: () => void;
@@ -50,9 +51,9 @@ export const LiveAttendance: React.FC<LiveAttendanceProps> = ({
   const selectedClass = classes.find(c => c.id === selectedClassId);
   const classStudents = useMemo(() => {
     return students
-      .filter(s => s.classGroupId === selectedClassId)
+      .filter(s => matchStudentClass(s.classGroupId, selectedClassId, classes))
       .sort((a, b) => a.name.localeCompare(b.name, 'pt-BR'));
-  }, [students, selectedClassId]);
+  }, [students, selectedClassId, classes]);
 
   // Attendance metrics calculation
   const metrics = useMemo(() => {

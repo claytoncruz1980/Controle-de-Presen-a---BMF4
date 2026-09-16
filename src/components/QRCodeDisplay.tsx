@@ -1,4 +1,4 @@
-import React, { useEffect, useState, useMemo } from 'react';
+import React, { useEffect, useState, useMemo, useRef } from 'react';
 import QRCode, { QRCodeErrorCorrectionLevel } from 'qrcode';
 
 interface QRCodeDisplayProps {
@@ -10,6 +10,7 @@ interface QRCodeDisplayProps {
   margin?: number;
   className?: string;
   showBorder?: boolean;
+  showSecurityBadge?: boolean;
 }
 
 /**
@@ -25,9 +26,11 @@ export const QRCodeDisplay: React.FC<QRCodeDisplayProps> = ({
   margin = 2,
   className = '',
   showBorder = true,
+  showSecurityBadge = false,
 }) => {
   const [svgString, setSvgString] = useState<string>('');
   const [error, setError] = useState<string | null>(null);
+  const lastValidSvgRef = useRef<string>('');
 
   useEffect(() => {
     let isMounted = true;
@@ -35,7 +38,7 @@ export const QRCodeDisplay: React.FC<QRCodeDisplayProps> = ({
     async function generateQRCode() {
       try {
         setError(null);
-        if (!value) return;
+        if (!value || typeof value !== 'string' || value.trim().length === 0) return;
 
         // Generate SVG string with high contrast and optimal quiet zone margin
         const svg = await QRCode.toString(value, {
@@ -51,10 +54,11 @@ export const QRCodeDisplay: React.FC<QRCodeDisplayProps> = ({
 
         if (isMounted) {
           setSvgString(svg);
+          lastValidSvgRef.current = svg;
         }
       } catch (err) {
         console.error('Failed to generate standard QR code', err);
-        if (isMounted) {
+        if (isMounted && !lastValidSvgRef.current) {
           setError('Erro ao renderizar QR Code.');
         }
       }
@@ -69,9 +73,10 @@ export const QRCodeDisplay: React.FC<QRCodeDisplayProps> = ({
 
   // Clean SVG rendering with crisp pixel edges (shapeRendering="crispEdges")
   const formattedSvg = useMemo(() => {
-    if (!svgString) return '';
+    const raw = svgString || lastValidSvgRef.current;
+    if (!raw) return '';
     // Ensure shape-rendering is crisp for scanner clarity
-    return svgString.replace('<svg ', `<svg style="width: 100%; height: 100%; display: block;" shape-rendering="crispEdges" `);
+    return raw.replace('<svg ', `<svg style="width: 100%; height: 100%; display: block;" shape-rendering="crispEdges" `);
   }, [svgString]);
 
   return (

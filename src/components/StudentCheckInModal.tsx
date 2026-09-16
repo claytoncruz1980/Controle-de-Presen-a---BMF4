@@ -12,6 +12,7 @@ import {
   Loader2
 } from 'lucide-react';
 import { useLab } from '../context/LabContext';
+import { matchStudentClass } from '../utils/attendanceHelpers';
 
 interface StudentCheckInModalProps {
   isOpen: boolean;
@@ -31,7 +32,8 @@ export const StudentCheckInModal: React.FC<StudentCheckInModalProps> = ({
     studentSelfCheckin,
     selfRegisterAndCheckin,
     dynamicToken,
-    dynamicSecondsLeft
+    dynamicSecondsLeft,
+    classes
   } = useLab();
 
   const [registrationNumber, setRegistrationNumber] = useState('');
@@ -50,7 +52,7 @@ export const StudentCheckInModal: React.FC<StudentCheckInModalProps> = ({
 
   if (!isOpen) return null;
 
-  const classStudents = students.filter(s => s.classGroupId === selectedClassId);
+  const classStudents = students.filter(s => matchStudentClass(s.classGroupId, selectedClassId, classes));
 
   const handleAutoRegSubmit = () => {
     const trimmedName = autoRegName.trim();

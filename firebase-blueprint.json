@@ -146,6 +146,28 @@
         "retryCount": { "type": "number" }
       },
       "required": ["id", "eventType", "sessionId", "createdAt", "syncStatus"]
+    },
+    "activeSession": {
+      "title": "Active Session Document",
+      "description": "Documento em tempo real com versionamento para sincronização do Telão e chamadas ativas",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string" },
+        "sessionId": { "type": "string" },
+        "classGroupId": { "type": "string" },
+        "version": { "type": "number" },
+        "lastUpdateTimestamp": { "type": "number" },
+        "attendance": { "type": "object" },
+        "activePeriod": { "type": "string" },
+        "isLive": { "type": "boolean" },
+        "isLocked": { "type": "boolean" },
+        "topic": { "type": "string" },
+        "discipline": { "type": "string" },
+        "date": { "type": "string" },
+        "professorId": { "type": "string" },
+        "professorName": { "type": "string" }
+      },
+      "required": ["id", "sessionId", "version", "lastUpdateTimestamp"]
     }
   },
   "firestore": {
@@ -160,6 +182,9 @@
     },
     "/sessions/{id}": {
       "entity": "sessions"
+    },
+    "/activeSession/{id}": {
+      "entity": "activeSession"
     },
     "/justifications/{id}": {
       "entity": "justifications"

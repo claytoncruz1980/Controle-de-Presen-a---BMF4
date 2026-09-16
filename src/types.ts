@@ -100,6 +100,8 @@ export interface ClassGroup {
 
 export interface AttendanceRecord {
   studentId: string;
+  studentName?: string;
+  studentRa?: string;
   status: AttendanceStatus; // Status geral consolidado
   period1Status?: AttendanceStatus; // Presença / Atraso / Falta na 1ª Aula consolidada
   period2Status?: AttendanceStatus; // Presença / Atraso / Falta na 2ª Aula consolidada
@@ -165,6 +167,29 @@ export interface LabSession {
   closedAt?: string;
   notes?: string;
   syncStatus?: 'synced' | 'pending' | 'offline';
+  version?: number; // Número de versão sequencial para Data Versioning
+  lastUpdateTimestamp?: number; // Timestamp numérico em ms da última alteração de presença
+}
+
+export interface ActiveSessionDocument {
+  id: string; // Document ID no Firestore (/activeSession/{id})
+  sessionId: string;
+  classGroupId: string;
+  version: number;
+  lastUpdateTimestamp: number;
+  attendance: Record<string, AttendanceRecord>;
+  activePeriod?: ClassPeriod;
+  isLive?: boolean;
+  isLocked?: boolean;
+  topic?: string;
+  discipline?: string;
+  date?: string;
+  professorId?: string;
+  professorName?: string;
+  activityType?: ActivityType;
+  labLocation?: LaboratoryLocation;
+  checkinCode?: string;
+  updatedBy?: string;
 }
 
 export interface TeacherPresence {
@@ -227,6 +252,23 @@ export interface JustificationRequest {
 
 export type AntiFraudMode = 'ultra_secure_tv' | 'balanced' | 'lenient';
 
+export interface DynamicQrEmailDispatch {
+  id: string;
+  cycleNumber: number;
+  token: string;
+  securityHash?: string;
+  recipient: string; // chamadabmf4@gmail.com
+  className?: string;
+  topic?: string;
+  period?: string;
+  sentAt: number;
+  sentAtFormatted: string;
+  deliveredViaSmtp?: boolean;
+  status: 'sent' | 'delivered' | 'pending' | 'failed';
+  message?: string;
+  telaoUrl?: string;
+}
+
 export interface AppSettings {
   institutionName: string;
   disciplineName: string; // "BMF4 - Bases Morfofuncionais 4"
@@ -237,8 +279,8 @@ export interface AppSettings {
   requireEPI: boolean;
   
   // Anti-Fraud TV Security Settings
-  antiFraudMode: AntiFraudMode; // 'ultra_secure_tv' (10s + trava celular), 'balanced' (15s), 'lenient' (30s)
-  tokenRotationSeconds: number; // Intervalo de rotação do QR na TV (8, 10, 15, 20 ou 30 segundos)
+  antiFraudMode: AntiFraudMode; // 'ultra_secure_tv' (45s + trava celular), 'balanced' (60s), 'lenient' (90s)
+  tokenRotationSeconds: number; // Intervalo de rotação do QR no Telão em segundos (ex: 30, 45, 60, 90, 120s para leitura tranquila)
   singleDeviceLock: boolean; // Impede 1 celular de bater presença para múltiplos alunos na mesma chamada
   requireGeofence: boolean; // Exige proximidade por GPS
   maxDistanceMeters: number; // Raio máximo de presença em metros (ex: 150m)
@@ -330,6 +372,7 @@ export interface AttendanceOutboxItem {
   createdAt: number; // Timestamp ms
   syncedAt?: number;
   retryCount: number;
+  attempts?: number;
   lastError?: string;
   payload?: any;
 }

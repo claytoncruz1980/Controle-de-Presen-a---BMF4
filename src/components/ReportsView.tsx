@@ -44,7 +44,8 @@ import {
   isRecordLate, 
   isRecordExcused, 
   isRecordAbsent, 
-  getRecordConsolidatedStatus 
+  getRecordConsolidatedStatus,
+  matchStudentClass
 } from '../utils/attendanceHelpers';
 
 export const ReportsView: React.FC = () => {
@@ -94,16 +95,16 @@ export const ReportsView: React.FC = () => {
   // Students of selected class, strictly sorted A-Z
   const classStudents = useMemo(() => {
     return students
-      .filter(s => s.classGroupId === selectedClassId)
+      .filter(s => matchStudentClass(s.classGroupId, selectedClassId, classes))
       .sort((a, b) => a.name.localeCompare(b.name, 'pt-BR', { numeric: true, sensitivity: 'base' }));
-  }, [students, selectedClassId]);
+  }, [students, selectedClassId, classes]);
 
   // All Sessions for this class sorted descending by date
   const classSessions = useMemo(() => {
     return sessions
-      .filter(s => s.classGroupId === selectedClassId)
+      .filter(s => matchStudentClass(s.classGroupId, selectedClassId, classes))
       .sort((a, b) => new Date(b.date).getTime() - new Date(a.date).getTime());
-  }, [sessions, selectedClassId]);
+  }, [sessions, selectedClassId, classes]);
 
   // Unique session dates list for quick filtering chips
   const uniqueClassDates = useMemo(() => {

@@ -54,7 +54,11 @@ function MainApp() {
   );
 
   const handleOpenTelao = (period?: ClassPeriod) => {
-    if (period) setProjectionPeriod(period);
+    if (period) {
+      setProjectionPeriod(period);
+    } else {
+      setProjectionPeriod(undefined);
+    }
 
     if (hasLiveSessionToday) {
       setIsTelaoActivePromptOpen(true);
@@ -494,7 +498,10 @@ function MainApp() {
       <NewSessionModal
         isOpen={isNewSessionOpen}
         onClose={() => setIsNewSessionOpen(false)}
-        onSessionStarted={() => {
+        onSessionStarted={(startedPeriod) => {
+          if (startedPeriod) {
+            setProjectionPeriod(startedPeriod);
+          }
           setActiveTab('chamada');
           setIsNewSessionOpen(false);
         }}
@@ -505,7 +512,10 @@ function MainApp() {
         isOpen={isTelaoConfigModalOpen}
         onClose={() => setIsTelaoConfigModalOpen(false)}
         isTelaoIntent={true}
-        onSessionStarted={() => {
+        onSessionStarted={(startedPeriod) => {
+          if (startedPeriod) {
+            setProjectionPeriod(startedPeriod);
+          }
           setIsTelaoConfigModalOpen(false);
           setIsProjectionOpen(true);
         }}

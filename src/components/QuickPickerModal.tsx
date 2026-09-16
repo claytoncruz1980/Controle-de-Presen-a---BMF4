@@ -11,6 +11,7 @@ import {
 import { useLab } from '../context/LabContext';
 import { Student } from '../types';
 import { StudentAvatar } from './StudentAvatar';
+import { matchStudentClass } from '../utils/attendanceHelpers';
 
 interface QuickPickerModalProps {
   isOpen: boolean;
@@ -34,7 +35,8 @@ export const QuickPickerModal: React.FC<QuickPickerModalProps> = ({ isOpen, onCl
     selectedClassId, 
     activeSession, 
     playBeep, 
-    benches 
+    benches,
+    classes
   } = useLab();
 
   const [isSpinning, setIsSpinning] = useState(false);
@@ -43,7 +45,7 @@ export const QuickPickerModal: React.FC<QuickPickerModalProps> = ({ isOpen, onCl
 
   if (!isOpen) return null;
 
-  const classStudents = students.filter(s => s.classGroupId === selectedClassId);
+  const classStudents = students.filter(s => matchStudentClass(s.classGroupId, selectedClassId, classes));
   const presentStudents = classStudents.filter(st => {
     const status = activeSession?.attendance[st.id]?.status;
     return status === 'present' || status === 'late';

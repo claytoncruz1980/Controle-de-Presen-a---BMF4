@@ -79,7 +79,7 @@ export const SettingsView: React.FC = () => {
   const [instName, setInstName] = useState(appSettings.institutionName);
   const [tolerance, setTolerance] = useState(appSettings.toleranceMinutes);
   const [antiFraudMode, setAntiFraudMode] = useState<AntiFraudMode>(appSettings.antiFraudMode || 'ultra_secure_tv');
-  const [tokenRotation, setTokenRotation] = useState<number>(appSettings.tokenRotationSeconds || 10);
+  const [tokenRotation, setTokenRotation] = useState<number>(appSettings.tokenRotationSeconds || 90);
   const [singleDeviceLock, setSingleDeviceLock] = useState<boolean>(appSettings.singleDeviceLock ?? true);
   const [allowSelfReg, setAllowSelfReg] = useState<boolean>(appSettings.allowSelfRegistration ?? true);
   const [isResetModalOpen, setIsResetModalOpen] = useState(false);
@@ -232,25 +232,31 @@ export const SettingsView: React.FC = () => {
             <label className="text-xs font-bold text-slate-700 flex items-center justify-between">
               <span className="flex items-center gap-1.5">
                 <RefreshCw className="w-3.5 h-3.5 text-sky-600" />
-                Tempo de Expiração do QR Code no Telão
+                Tempo de Exibição / Rotação do QR Code Dinâmico
               </span>
-              <span className="text-sky-800 font-mono font-bold">{tokenRotation} segundos</span>
+              <span className="text-sky-800 font-mono font-bold bg-sky-50 px-2 py-0.5 rounded-lg border border-sky-200">
+                {tokenRotation} segundos
+              </span>
             </label>
             <input
               type="range"
-              min={5}
-              max={30}
-              step={1}
+              min={15}
+              max={180}
+              step={5}
               value={tokenRotation}
               onChange={(e) => setTokenRotation(Number(e.target.value))}
               className="w-full accent-sky-600"
             />
             <div className="flex justify-between text-[10px] text-slate-400 font-medium">
-              <span>5s (Ultra-rápido)</span>
-              <span>10s (Ideal para TV)</span>
-              <span>15s (Padrão)</span>
-              <span>30s (Auditório)</span>
+              <span>15s</span>
+              <span>45s</span>
+              <span className="text-sky-700 font-bold">90s (Recomendado)</span>
+              <span>120s (Sala Grande)</span>
+              <span>180s (Estendido)</span>
             </div>
+            <p className="text-[11px] text-slate-500 pt-0.5">
+              Tempo estendido para garantir foco perfeito e leitura imediata de câmeras de smartphones no telão ou projetor.
+            </p>
           </div>
 
           {/* Single Device Lock Toggle */}
@@ -519,7 +525,7 @@ export const SettingsView: React.FC = () => {
             <div className="p-3.5 rounded-2xl bg-emerald-50/80 border border-emerald-200">
               <div className="text-[11px] font-bold text-emerald-800 uppercase tracking-wider">Gravados na Nuvem</div>
               <div className="text-xl font-black text-emerald-900 mt-1">
-                {outboxQueue.filter(i => i.status === 'synced').length}
+                {outboxQueue.filter(i => (i.syncStatus || (i as any).status) === 'synced').length}
               </div>
               <div className="text-[10px] text-emerald-700/80 mt-0.5">Salvos no Firestore</div>
             </div>
@@ -537,7 +543,7 @@ export const SettingsView: React.FC = () => {
           <div className="space-y-2">
             <div className="flex items-center justify-between text-xs font-bold text-slate-800">
               <span>Itens na Fila de Transmissão ({outboxQueue.length}):</span>
-              {outboxQueue.some(i => i.status === 'synced') && (
+              {outboxQueue.some(i => (i.syncStatus || (i as any).status) === 'synced') && (
                 <button
                   type="button"
                   onClick={() => {
@@ -558,52 +564,71 @@ export const SettingsView: React.FC = () => {
               </div>
             ) : (
               <div className="max-h-48 overflow-y-auto space-y-1.5 pr-1">
-                {outboxQueue.slice(0, 10).map((item) => (
-                  <div
-                    key={item.id}
-                    className={`p-2.5 rounded-xl border flex items-center justify-between text-xs ${
-                      item.status === 'pending'
-                        ? 'bg-amber-50/80 border-amber-200 text-amber-900'
-                        : item.status === 'synced'
-                        ? 'bg-slate-50 border-slate-200 text-slate-700'
-                        : 'bg-rose-50 border-rose-200 text-rose-900'
-                    }`}
-                  >
-                    <div className="flex items-center gap-2">
-                      <div className={`w-2 h-2 rounded-full shrink-0 ${
-                        item.status === 'pending'
-                          ? 'bg-amber-500 animate-pulse'
-                          : item.status === 'synced'
-                          ? 'bg-emerald-500'
-                          : 'bg-rose-500'
-                      }`} />
-                      <div>
-                        <div className="font-bold flex items-center gap-1.5">
-                          <span>{item.studentName || item.studentId || 'Evento em Lote'}</span>
-                          <span className="text-[10px] font-mono px-1.5 py-0.2 rounded bg-white/80 border border-black/5 uppercase">
-                            {item.eventType}
-                          </span>
-                        </div>
-                        <div className="text-[10px] text-slate-500">
-                          Horário: {item.timestamp || new Date(item.createdAt).toLocaleTimeString()}
-                          {item.attempts > 0 && ` • Tentativas: ${item.attempts}`}
+                {outboxQueue.slice(0, 15).map((item) => {
+                  const itemSyncStatus = item.syncStatus || (item.status === 'synced' ? 'synced' : 'pending');
+                  const isSynced = itemSyncStatus === 'synced';
+                  const isSyncing = itemSyncStatus === 'syncing';
+                  const isPending = itemSyncStatus === 'pending';
+                  const attemptsCount = item.retryCount ?? item.attempts ?? 0;
+
+                  return (
+                    <div
+                      key={item.id}
+                      className={`p-2.5 rounded-xl border flex items-center justify-between text-xs transition-colors ${
+                        isSynced
+                          ? 'bg-slate-50 border-slate-200 text-slate-700'
+                          : isSyncing
+                          ? 'bg-sky-50/90 border-sky-200 text-sky-900'
+                          : isPending
+                          ? 'bg-amber-50/80 border-amber-200 text-amber-900'
+                          : 'bg-rose-50 border-rose-200 text-rose-900'
+                      }`}
+                    >
+                      <div className="flex items-center gap-2">
+                        <div className={`w-2 h-2 rounded-full shrink-0 ${
+                          isSynced
+                            ? 'bg-emerald-500'
+                            : isSyncing
+                            ? 'bg-sky-500 animate-pulse'
+                            : isPending
+                            ? 'bg-amber-500 animate-pulse'
+                            : 'bg-rose-500'
+                        }`} />
+                        <div>
+                          <div className="font-bold flex items-center gap-1.5">
+                            <span>{item.studentName || item.studentId || 'Evento em Lote'}</span>
+                            <span className="text-[10px] font-mono px-1.5 py-0.2 rounded bg-white/80 border border-black/5 uppercase">
+                              {item.eventType}
+                            </span>
+                          </div>
+                          <div className="text-[10px] text-slate-500">
+                            Horário: {item.timestamp || new Date(item.createdAt).toLocaleTimeString()}
+                            {attemptsCount > 0 && ` • Tentativas: ${attemptsCount}`}
+                            {item.lastError && (
+                              <span className="text-rose-600 block sm:inline sm:ml-1 font-medium">
+                                • {item.lastError}
+                              </span>
+                            )}
+                          </div>
                         </div>
                       </div>
-                    </div>
 
-                    <div className="flex items-center gap-2">
-                      <span className={`text-[10px] font-black uppercase px-2 py-0.5 rounded-md ${
-                        item.status === 'pending'
-                          ? 'bg-amber-200 text-amber-900'
-                          : item.status === 'synced'
-                          ? 'bg-emerald-100 text-emerald-800'
-                          : 'bg-rose-200 text-rose-900'
-                      }`}>
-                        {item.status === 'pending' ? 'Pendente' : item.status === 'synced' ? 'Nuvem' : 'Falha'}
-                      </span>
+                      <div className="flex items-center gap-2 shrink-0">
+                        <span className={`text-[10px] font-black uppercase px-2 py-0.5 rounded-md ${
+                          isSynced
+                            ? 'bg-emerald-100 text-emerald-800'
+                            : isSyncing
+                            ? 'bg-sky-100 text-sky-800 animate-pulse'
+                            : isPending
+                            ? 'bg-amber-200 text-amber-900'
+                            : 'bg-rose-200 text-rose-900'
+                        }`}>
+                          {isSynced ? 'Nuvem' : isSyncing ? 'Enviando...' : isPending ? 'Pendente' : 'Falha'}
+                        </span>
+                      </div>
                     </div>
-                  </div>
-                ))}
+                  );
+                })}
               </div>
             )}
           </div>
@@ -638,14 +663,14 @@ export const SettingsView: React.FC = () => {
             <button
               type="button"
               onClick={() => {
-                processOutboxQueue();
-                showFeedback('Processando fila Outbox...');
+                processOutboxQueue(true);
+                showFeedback('Processando fila Outbox em lote...');
               }}
               disabled={isOutboxSyncing}
               className="w-full sm:w-auto px-4 py-2 bg-amber-600 hover:bg-amber-700 text-white text-xs font-bold rounded-xl flex items-center justify-center gap-2 transition-all active:scale-95 cursor-pointer shadow-xs disabled:opacity-60"
             >
               <RefreshCw className={`w-3.5 h-3.5 ${isOutboxSyncing ? 'animate-spin text-amber-200' : ''}`} />
-              <span>{isOutboxSyncing ? 'Sincronizando Fila...' : 'Processar Fila Outbox Agora'}</span>
+              <span>{isOutboxSyncing ? 'Sincronizando em Lote...' : 'Processar Fila Outbox Agora'}</span>
             </button>
           </div>
         </div>

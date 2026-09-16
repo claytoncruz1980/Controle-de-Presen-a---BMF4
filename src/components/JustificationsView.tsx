@@ -23,6 +23,7 @@ import {
 import { useLab } from '../context/LabContext';
 import { JustificationRequest, Student } from '../types';
 import { StudentAvatar } from './StudentAvatar';
+import { matchStudentClass } from '../utils/attendanceHelpers';
 
 export const JustificationsView: React.FC = () => {
   const { 
@@ -58,15 +59,15 @@ export const JustificationsView: React.FC = () => {
 
   const classStudents = useMemo(() => {
     return students
-      .filter(s => s.classGroupId === selectedClassId)
+      .filter(s => matchStudentClass(s.classGroupId, selectedClassId, classes))
       .sort((a, b) => a.name.localeCompare(b.name, 'pt-BR', { numeric: true, sensitivity: 'base' }));
-  }, [students, selectedClassId]);
+  }, [students, selectedClassId, classes]);
 
   const classSessions = useMemo(() => {
     return sessions
-      .filter(s => s.classGroupId === selectedClassId)
+      .filter(s => matchStudentClass(s.classGroupId, selectedClassId, classes))
       .sort((a, b) => new Date(b.date).getTime() - new Date(a.date).getTime());
-  }, [sessions, selectedClassId]);
+  }, [sessions, selectedClassId, classes]);
 
   const showToast = (msg: string) => {
     setToastMessage(msg);

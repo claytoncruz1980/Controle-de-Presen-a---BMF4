@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useRef, useMemo } from 'react';
+import React, { useState, useEffect, useRef, useMemo, useCallback } from 'react';
 import { 
   PlusCircle, 
   Calendar, 
@@ -19,13 +19,13 @@ import {
   Microscope,
   Tv
 } from 'lucide-react';
-import { useLab, sortClassesAlphabetically } from '../context/LabContext';
+import { useLab, sortClassesAlphabetically, isDateToday } from '../context/LabContext';
 import { ActivityCategory, ActivityType, ClassPeriod, LaboratoryLocation } from '../types';
 
 interface NewSessionModalProps {
   isOpen: boolean;
   onClose: () => void;
-  onSessionStarted?: () => void;
+  onSessionStarted?: (startedPeriod?: ClassPeriod) => void;
   isTelaoIntent?: boolean;
 }
 
@@ -71,11 +71,14 @@ export const NewSessionModal: React.FC<NewSessionModalProps> = ({
   const [savedTitles, setSavedTitles] = useState<string[]>(() => {
     try {
       const stored = localStorage.getItem('bmf4_lesson_titles');
-      if (stored !== null) return JSON.parse(stored);
+      if (stored !== null) {
+        const parsed = JSON.parse(stored);
+        if (Array.isArray(parsed) && parsed.length > 0) return parsed;
+      }
     } catch {
       // fallback
     }
-    return [];
+    return DEFAULT_LESSON_TITLES;
   });
 
   const [newTitleInput, setNewTitleInput] = useState('');
@@ -89,7 +92,16 @@ export const NewSessionModal: React.FC<NewSessionModalProps> = ({
   const [labLocation, setLabLocation] = useState<LaboratoryLocation>('anatomia');
   const [activePeriod, setActivePeriod] = useState<ClassPeriod>('1');
   const [sessionDate, setSessionDate] = useState(new Date().toISOString().split('T')[0]);
-  const [topic, setTopic] = useState('');
+  const [topic, setTopic] = useState(() => {
+    try {
+      const stored = localStorage.getItem('bmf4_lesson_titles');
+      if (stored !== null) {
+        const parsed = JSON.parse(stored);
+        if (Array.isArray(parsed) && parsed.length > 0) return parsed[0];
+      }
+    } catch {}
+    return DEFAULT_LESSON_TITLES[0];
+  });
   const [notes, setNotes] = useState('');
 
   const prevIsOpenRef = useRef(false);
@@ -100,20 +112,43 @@ export const NewSessionModal: React.FC<NewSessionModalProps> = ({
 
   const hasTeacherConflict = existingLiveSessionInClass && existingLiveSessionInClass.professorId !== profId;
 
+  // Intelligent period suggestion based on class's sessions today
+  const determineSuggestedPeriod = useCallback((targetClassId: string, currentActType: ActivityType): ClassPeriod => {
+    if (currentActType.startsWith('atividade_pratica') || currentActType === 'prova_teorica') {
+      return 'activity_single';
+    }
+    const classSessionsToday = sessions.filter(s => s.classGroupId === targetClassId && isDateToday(s.date));
+    const hasClosedP1 = classSessionsToday.some(s => 
+      (s.isLocked || s.isPeriod1Locked) && 
+      (s.activePeriod === '1' || s.activePeriod === 'p1_start' || s.activePeriod === 'p1_end')
+    );
+    const hasLiveP1 = classSessionsToday.some(s => 
+      s.isLive && !s.isLocked && (s.activePeriod === '1' || s.activePeriod === 'p1_start' || s.activePeriod === 'p1_end')
+    );
+    // If 1st period was closed today and no live 1st period is currently running, automatically default to 2nd period
+    if (hasClosedP1 && !hasLiveP1) {
+      return '2';
+    }
+    return '1';
+  }, [sessions]);
+
   // Sync selected class only when modal transitions from closed to open
   useEffect(() => {
     if (isOpen && !prevIsOpenRef.current) {
-      if (selectedClassId && classes.some(c => c.id === selectedClassId)) {
-        setClassId(selectedClassId);
-      } else if (classes.length > 0) {
-        setClassId(classes[0].id);
-      }
+      const targetClass = (selectedClassId && classes.some(c => c.id === selectedClassId))
+        ? selectedClassId
+        : (classes[0]?.id || 'class-bmf4-a');
+      setClassId(targetClass);
+
       if (activeProfessorId && professors.some(p => p.id === activeProfessorId)) {
         setProfId(activeProfessorId);
       }
+
+      const suggested = determineSuggestedPeriod(targetClass, activityType);
+      setActivePeriod(suggested);
     }
     prevIsOpenRef.current = isOpen;
-  }, [isOpen, selectedClassId, activeProfessorId, classes, professors]);
+  }, [isOpen, selectedClassId, activeProfessorId, classes, professors, determineSuggestedPeriod, activityType]);
 
   const handleSaveCustomTitle = () => {
     if (!newTitleInput.trim()) return;
@@ -167,28 +202,33 @@ export const NewSessionModal: React.FC<NewSessionModalProps> = ({
     setCategory(newCat);
     if (newCat === 'teorica') {
       setActivityType('aula_teorica');
-      setActivePeriod('1');
+      setActivePeriod(determineSuggestedPeriod(classId, 'aula_teorica'));
     } else {
       setActivityType('aula_pratica');
-      setActivePeriod('1');
+      setActivePeriod(determineSuggestedPeriod(classId, 'aula_pratica'));
     }
   };
 
   const handleActivityTypeChange = (newType: ActivityType) => {
     setActivityType(newType);
-    if (newType.startsWith('atividade_pratica') || newType === 'prova_teorica') {
-      setActivePeriod('activity_single');
-    } else {
-      setActivePeriod('1');
-    }
+    setActivePeriod(determineSuggestedPeriod(classId, newType));
   };
 
   const handleSubmit = (e: React.FormEvent) => {
     e.preventDefault();
-    if (!topic.trim()) return;
+    const finalTopic = topic.trim() || (category === 'pratica' ? 'Aula Prática BMF4: Morfofuncional' : 'Aula Teórica BMF4');
+
+    // Auto-save custom topic if not already in savedTitles
+    if (finalTopic && !savedTitles.includes(finalTopic)) {
+      const updatedTitles = [finalTopic, ...savedTitles];
+      setSavedTitles(updatedTitles);
+      try {
+        localStorage.setItem('bmf4_lesson_titles', JSON.stringify(updatedTitles));
+      } catch {}
+    }
 
     startNewSession({
-      topic: topic.trim(),
+      topic: finalTopic,
       professorId: profId,
       classGroupId: classId,
       activityCategory: category,
@@ -200,7 +240,7 @@ export const NewSessionModal: React.FC<NewSessionModalProps> = ({
     });
 
     if (onSessionStarted) {
-      onSessionStarted();
+      onSessionStarted(activePeriod);
     } else {
       onClose();
     }
@@ -266,7 +306,12 @@ export const NewSessionModal: React.FC<NewSessionModalProps> = ({
             </label>
             <select
               value={classId}
-              onChange={(e) => setClassId(e.target.value)}
+              onChange={(e) => {
+                const newClass = e.target.value;
+                setClassId(newClass);
+                const suggested = determineSuggestedPeriod(newClass, activityType);
+                setActivePeriod(suggested);
+              }}
               className="w-full px-3 py-2 bg-slate-50 border border-slate-200 rounded-xl focus:bg-white focus:outline-none focus:ring-2 focus:ring-sky-500 font-semibold text-slate-800"
             >
               {sortClassesAlphabetically(classes).map(c => (

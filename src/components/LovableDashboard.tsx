@@ -9,7 +9,6 @@ import {
   Sparkles, 
   RotateCcw, 
   Search, 
-  Share2, 
   Lock, 
   ShieldCheck, 
   Check, 
@@ -21,7 +20,6 @@ import {
   ChevronDown,
   Stethoscope,
   RefreshCw,
-  Copy,
   ExternalLink,
   BookOpen,
   Calendar,
@@ -100,6 +98,9 @@ export const LovableDashboard: React.FC<LovableDashboardProps> = ({
     setActivePeriod,
     dynamicToken,
     dynamicSecondsLeft,
+    dynamicCycleNumber,
+    lastEmailDispatch,
+    triggerManualEmailDispatch,
     activeProfessor,
     appSettings,
     justifications,
@@ -110,12 +111,10 @@ export const LovableDashboard: React.FC<LovableDashboardProps> = ({
   // Search and Filter states
   const [searchTerm, setSearchTerm] = useState('');
   const [statusFilter, setStatusFilter] = useState<AttendanceStatus | 'all'>('all');
-  const [copiedLink, setCopiedLink] = useState(false);
-  const [copiedTvLink, setCopiedTvLink] = useState(false);
-  const [copiedEmailText, setCopiedEmailText] = useState(false);
-  const [qrActiveTab, setQrActiveTab] = useState<'dynamic' | 'email' | 'tv'>('dynamic');
+  const [qrActiveTab, setQrActiveTab] = useState<'dynamic' | 'tv'>('dynamic');
   const [emailContentType, setEmailContentType] = useState<'telao' | 'resumo'>('telao');
-  const [emailRecipient, setEmailRecipient] = useState(activeProfessor?.email || '');
+  const [emailRecipient, setEmailRecipient] = useState('');
+  const [isTriggeringEmail, setIsTriggeringEmail] = useState(false);
   const [actionSuccessToast, setActionSuccessToast] = useState<string | null>(null);
   const [confirmLockModalOpen, setConfirmLockModalOpen] = useState(false);
 
@@ -206,24 +205,6 @@ export const LovableDashboard: React.FC<LovableDashboardProps> = ({
   );
   const tvScreenUrl = getPublicTelaoUrl(selectedClassId, currentPeriod, activeSession?.id);
 
-  const handleCopyStudentLink = () => {
-    navigator.clipboard.writeText(studentCheckinUrl).then(() => {
-      setCopiedLink(true);
-      showToast('Link seguro do Aluno copiado para a área de transferência!');
-      playBeep('success');
-      setTimeout(() => setCopiedLink(false), 2500);
-    });
-  };
-
-  const handleCopyTvLink = () => {
-    navigator.clipboard.writeText(tvScreenUrl).then(() => {
-      setCopiedTvLink(true);
-      showToast('Link do Telão para Smart TVs e Projetores copiado!');
-      playBeep('success');
-      setTimeout(() => setCopiedTvLink(false), 2500);
-    });
-  };
-
   const handleOpenTvInNewTab = () => {
     window.open(tvScreenUrl, '_blank', 'noopener,noreferrer');
   };
@@ -243,28 +224,25 @@ export const LovableDashboard: React.FC<LovableDashboardProps> = ({
   const activeEmailSubject = emailSubjects[emailContentType];
   const activeEmailBody = emailBodies[emailContentType];
 
+  const handleTriggerDirectEmail = async () => {
+    setIsTriggeringEmail(true);
+    try {
+      await triggerManualEmailDispatch();
+      showToast('QR Code enviado automaticamente para chamadabmf4@gmail.com!');
+      playBeep('success');
+    } catch {
+      showToast('Erro ao disparar e-mail. Tentando via cliente local...');
+      handleOpenEmailApp();
+    } finally {
+      setIsTriggeringEmail(false);
+    }
+  };
+
   const handleOpenEmailApp = () => {
     const targetEmail = emailRecipient.trim() || activeProfessor?.email || '';
     const mailtoUrl = `mailto:${encodeURIComponent(targetEmail)}?subject=${encodeURIComponent(activeEmailSubject)}&body=${encodeURIComponent(activeEmailBody)}`;
     window.location.href = mailtoUrl;
     showToast(`Abrindo cliente de e-mail (${targetEmail || 'destinatário'})...`);
-  };
-
-  const handleCopyEmailContent = () => {
-    navigator.clipboard.writeText(activeEmailBody).then(() => {
-      setCopiedEmailText(true);
-      showToast('Texto do e-mail copiado com sucesso!');
-      playBeep('success');
-      setTimeout(() => setCopiedEmailText(false), 2500);
-    });
-  };
-
-  // TV Screen Sharing via WhatsApp
-  const handleShareTvWhatsApp = () => {
-    const message = `📺 *Telão BMF4 Medicina - Projeção de Chamada*\n\nTurma: *${selectedClass?.name || 'BMF4'}*\nDisciplina: *${activeSession?.topic || selectedClass?.discipline || 'Bases Morfofuncionais 4'}*\n\n🔗 *Link Direto para Smart TV / Projetor:*\n${tvScreenUrl}\n\n📱 *Link Público do Aluno (Registro Direto sem Login):*\n${studentCheckinUrl}\n\n_Ao abrir o link do aluno, a presença é registrada diretamente no portal seguro._`;
-    const waUrl = `https://api.whatsapp.com/send?text=${encodeURIComponent(message)}`;
-    window.open(waUrl, '_blank', 'noopener,noreferrer');
-    showToast('Abrindo WhatsApp com os links de chamada...');
   };
 
   // Chromecast & Google Cast Trigger
@@ -280,24 +258,6 @@ export const LovableDashboard: React.FC<LovableDashboardProps> = ({
     } catch {
       alert('Para transmitir no Google Chrome / Edge:\n\n1. Clique no menu do navegador (3 pontinhos no canto superior direito).\n2. Selecione "Transmitir..." (Cast).\n3. Escolha o Chromecast ou Smart TV da sala de aula.');
       showToast('Use o menu Transmitir (Cast) do Chrome');
-    }
-  };
-
-  // TV Screen Native Share (AirDrop / Nearby Share)
-  const handleShareNative = async () => {
-    if (typeof navigator !== 'undefined' && navigator.share) {
-      try {
-        await navigator.share({
-          title: `Telão BMF4 Medicina - ${selectedClass?.name || 'BMF4'}`,
-          text: `Link do Telão para TV/Projetor - Turma ${selectedClass?.name || 'BMF4'}`,
-          url: tvScreenUrl
-        });
-        showToast('Compartilhado com sucesso!');
-      } catch {
-        // user cancelled or share failed
-      }
-    } else {
-      handleCopyTvLink();
     }
   };
 
@@ -685,19 +645,7 @@ export const LovableDashboard: React.FC<LovableDashboardProps> = ({
                   <span>QR Code Dinâmico</span>
                 </button>
 
-                <button
-                  type="button"
-                  id="btn-tab-share-email"
-                  onClick={() => setQrActiveTab('email')}
-                  className={`px-3.5 py-1.5 rounded-xl text-xs font-bold flex items-center gap-1.5 transition-all cursor-pointer ${
-                    qrActiveTab === 'email'
-                      ? 'bg-white text-indigo-900 shadow-xs'
-                      : 'text-slate-600 hover:text-slate-900'
-                  }`}
-                >
-                  <Mail className="w-3.5 h-3.5 text-indigo-600" />
-                  <span>Enviar por E-mail</span>
-                </button>
+
 
                 <button
                   type="button"
@@ -759,40 +707,29 @@ export const LovableDashboard: React.FC<LovableDashboardProps> = ({
                       Projete o QR Code na sala ou laboratório. O código rotaciona automaticamente com validação de segurança.
                     </p>
 
-                    {/* Action buttons (Clean, non-redundant actions) */}
-                    <div className="pt-1 flex flex-wrap items-center justify-center sm:justify-start gap-2">
-                      <button
-                        type="button"
-                        id="btn-copy-student-link-dashboard"
-                        onClick={handleCopyStudentLink}
-                        className="px-3.5 py-1.5 bg-teal-50 hover:bg-teal-100 text-teal-800 text-xs font-bold rounded-xl border border-teal-200 flex items-center gap-1.5 transition-all shadow-2xs active:scale-95 cursor-pointer"
-                        title="Copiar link dinâmico para os alunos registrarem presença"
-                      >
-                        {copiedLink ? <Check className="w-3.5 h-3.5 text-emerald-600" /> : <Copy className="w-3.5 h-3.5 text-teal-600" />}
-                        <span>{copiedLink ? 'Link Copiado!' : 'Copiar Link do Aluno'}</span>
-                      </button>
-
-                      <a
-                        href={studentCheckinUrl}
-                        target="_blank"
-                        rel="noreferrer"
-                        className="px-3.5 py-1.5 bg-slate-100 hover:bg-slate-200 text-slate-700 text-xs font-bold rounded-xl border border-slate-200 flex items-center gap-1.5 transition-all shadow-2xs active:scale-95"
-                        title="Abrir o portal do aluno em nova aba para testar"
-                      >
-                        <ExternalLink className="w-3.5 h-3.5 text-slate-600" />
-                        <span>Testar no Navegador</span>
-                      </a>
-
+                    {/* Action buttons - Apenas o link do modo telão conforme solicitado */}
+                    <div className="pt-2 flex flex-wrap items-center justify-center sm:justify-start gap-2.5">
                       <button
                         type="button"
                         id="btn-quick-open-telao-from-qr"
                         onClick={() => onOpenProjectionScreen(currentPeriod)}
-                        className="px-3.5 py-1.5 bg-sky-50 hover:bg-sky-100 text-sky-800 text-xs font-bold rounded-xl border border-sky-200 flex items-center gap-1.5 transition-all shadow-2xs active:scale-95 cursor-pointer"
+                        className="px-4 py-2 bg-sky-600 hover:bg-sky-500 text-white text-xs font-bold rounded-xl flex items-center gap-2 shadow-sm transition-all active:scale-95 cursor-pointer"
                         title="Abrir tela de projeção para Smart TV ou Projetor"
                       >
-                        <Monitor className="w-3.5 h-3.5 text-sky-600" />
-                        <span>Projetar em Telão</span>
+                        <Monitor className="w-4 h-4 text-white" />
+                        <span>Abrir Modo Telão</span>
                       </button>
+
+                      <a
+                        href={tvScreenUrl}
+                        target="_blank"
+                        rel="noreferrer"
+                        className="px-3.5 py-2 bg-slate-100 hover:bg-slate-200 text-slate-700 text-xs font-bold rounded-xl border border-slate-200 flex items-center gap-1.5 transition-all shadow-2xs"
+                        title="Link direto do Modo Telão para abrir em tela cheia na TV"
+                      >
+                        <ExternalLink className="w-3.5 h-3.5 text-slate-600" />
+                        <span>Link do Modo Telão</span>
+                      </a>
                     </div>
                   </div>
                 </div>
@@ -947,40 +884,31 @@ export const LovableDashboard: React.FC<LovableDashboardProps> = ({
                           onClick={handleOpenEmailApp}
                           className="flex-1 min-w-[200px] py-2.5 px-4 bg-indigo-600 hover:bg-indigo-700 active:scale-98 text-white rounded-xl font-bold text-xs shadow-md flex items-center justify-center gap-2 cursor-pointer transition-all"
                         >
-                          <Send className="w-4 h-4" />
-                          <span>Abrir no E-mail (Gmail / Outlook)</span>
+                          <Mail className="w-4 h-4" />
+                          <span>Abrir no Cliente de E-mail (Envio Padrão)</span>
                         </button>
 
-                        <button
-                          type="button"
-                          id="btn-copy-email-message-optimized"
-                          onClick={handleCopyEmailContent}
-                          className="py-2.5 px-3.5 bg-white hover:bg-slate-100 text-slate-700 rounded-xl font-bold text-xs border border-slate-300 flex items-center justify-center gap-1.5 cursor-pointer transition-colors shadow-2xs"
-                          title="Copiar texto pronto para envio"
+                        <a
+                          href={tvScreenUrl}
+                          target="_blank"
+                          rel="noreferrer"
+                          className="py-2.5 px-4 bg-sky-50 hover:bg-sky-100 text-sky-800 rounded-xl font-bold text-xs border border-sky-200 flex items-center justify-center gap-1.5 cursor-pointer transition-colors shadow-2xs"
+                          title="Acessar o link do Modo Telão diretamente"
                         >
-                          {copiedEmailText ? <Check className="w-4 h-4 text-emerald-600" /> : <Copy className="w-4 h-4" />}
-                          <span>{copiedEmailText ? 'Texto Copiado!' : 'Copiar Texto'}</span>
-                        </button>
+                          <ExternalLink className="w-4 h-4 text-sky-600" />
+                          <span>Link do Modo Telão</span>
+                        </a>
                       </div>
 
-                      <div className="flex flex-wrap items-center gap-2 pt-1 border-t border-slate-200/80">
-                        <button
-                          type="button"
-                          onClick={handleCopyTvLink}
-                          className="py-1.5 px-3 bg-white hover:bg-slate-100 text-sky-700 rounded-xl font-bold text-[11px] border border-sky-200 flex items-center gap-1.5 cursor-pointer transition-colors shadow-2xs"
-                        >
-                          {copiedTvLink ? <Check className="w-3.5 h-3.5 text-emerald-600" /> : <ExternalLink className="w-3.5 h-3.5" />}
-                          <span>{copiedTvLink ? 'Link Copiado!' : 'Copiar Link Telão'}</span>
-                        </button>
-
-                        <button
-                          type="button"
-                          onClick={handleShareTvWhatsApp}
-                          className="py-1.5 px-3 bg-white hover:bg-emerald-50 text-emerald-700 rounded-xl font-bold text-[11px] border border-emerald-200 flex items-center gap-1.5 cursor-pointer transition-colors shadow-2xs"
-                        >
-                          <MessageCircle className="w-3.5 h-3.5" />
-                          <span>Enviar no WhatsApp</span>
-                        </button>
+                      {/* Informações do Envio Padrão */}
+                      <div className="p-3 bg-slate-100 border border-slate-200 rounded-xl text-xs space-y-1">
+                        <div className="flex items-center gap-1.5 font-bold text-slate-800">
+                          <Mail className="w-3.5 h-3.5 text-indigo-600" />
+                          <span>Envio Padrão via E-mail</span>
+                        </div>
+                        <p className="text-[11px] text-slate-600 leading-relaxed">
+                          O botão abre diretamente seu aplicativo de e-mail (Gmail, Outlook, etc.) com o relatório e o link da chamada formatados para o destinatário preenchido.
+                        </p>
                       </div>
                     </div>
 
@@ -1048,15 +976,15 @@ export const LovableDashboard: React.FC<LovableDashboardProps> = ({
                       <Monitor className="w-4 h-4" />
                       <span>Abrir Modo Telão</span>
                     </button>
-
-                    <button
-                      type="button"
-                      onClick={handleShareNative}
-                      title="Compartilhar link do Telão (AirDrop, Mensagens, etc.)"
-                      className="p-2.5 bg-slate-800 hover:bg-slate-700 text-slate-200 rounded-xl border border-slate-700 flex items-center justify-center cursor-pointer transition-colors shadow-sm"
+                    <a
+                      href={tvScreenUrl}
+                      target="_blank"
+                      rel="noreferrer"
+                      className="px-3.5 py-2.5 bg-slate-800 hover:bg-slate-700 text-slate-200 rounded-xl border border-slate-700 font-bold text-xs flex items-center gap-1.5 transition-colors shadow-2xs"
                     >
-                      <Share2 className="w-4 h-4" />
-                    </button>
+                      <ExternalLink className="w-3.5 h-3.5 text-sky-400" />
+                      <span>Link do Telão</span>
+                    </a>
                   </div>
                 </div>
 
@@ -1086,7 +1014,7 @@ export const LovableDashboard: React.FC<LovableDashboardProps> = ({
                       <span>2. Enviar por E-mail</span>
                     </div>
                     <p className="text-[11px] text-slate-500">
-                      Envie o link para abrir no navegador da TV ou do computador da sala.
+                      Envio padrão para o professor ou coordenador via aplicativo de e-mail.
                     </p>
                     <button
                       type="button"
@@ -1097,36 +1025,27 @@ export const LovableDashboard: React.FC<LovableDashboardProps> = ({
                       className="w-full py-2 bg-indigo-600 hover:bg-indigo-700 text-white rounded-xl font-bold text-xs flex items-center justify-center gap-1.5 cursor-pointer shadow-2xs transition-all"
                     >
                       <Mail className="w-3.5 h-3.5" />
-                      <span>Ir para Envio de E-mail</span>
+                      <span>Envio por E-mail</span>
                     </button>
                   </div>
 
                   <div className="p-3.5 bg-slate-50 rounded-2xl border border-slate-200 space-y-2">
                     <div className="flex items-center gap-2 text-xs font-bold text-slate-900">
-                      <MessageCircle className="w-4 h-4 text-emerald-600" />
-                      <span>3. WhatsApp & Copiar</span>
+                      <Tv className="w-4 h-4 text-sky-600" />
+                      <span>3. Link do Modo Telão</span>
                     </div>
                     <p className="text-[11px] text-slate-500">
-                      Copie o link direto ou envie para o seu WhatsApp para abrir na TV.
+                      Abra o Telão diretamente no navegador da Smart TV ou em uma nova aba.
                     </p>
-                    <div className="flex items-center gap-2">
-                      <button
-                        type="button"
-                        onClick={handleShareTvWhatsApp}
-                        className="flex-1 py-2 bg-emerald-600 hover:bg-emerald-700 text-white rounded-xl font-bold text-xs flex items-center justify-center gap-1 cursor-pointer shadow-2xs transition-all"
-                      >
-                        <MessageCircle className="w-3.5 h-3.5" />
-                        <span>WhatsApp</span>
-                      </button>
-                      <button
-                        type="button"
-                        onClick={handleCopyTvLink}
-                        className="py-2 px-3 bg-white hover:bg-slate-100 text-slate-700 rounded-xl font-bold text-xs border border-slate-300 flex items-center justify-center cursor-pointer shadow-2xs transition-colors"
-                        title="Copiar Link"
-                      >
-                        {copiedTvLink ? <Check className="w-3.5 h-3.5 text-emerald-600" /> : <Copy className="w-3.5 h-3.5" />}
-                      </button>
-                    </div>
+                    <a
+                      href={tvScreenUrl}
+                      target="_blank"
+                      rel="noreferrer"
+                      className="w-full py-2 bg-sky-600 hover:bg-sky-700 text-white rounded-xl font-bold text-xs flex items-center justify-center gap-1.5 cursor-pointer shadow-2xs transition-all text-center block"
+                    >
+                      <ExternalLink className="w-3.5 h-3.5" />
+                      <span>Abrir Telão em Nova Aba</span>
+                    </a>
                   </div>
                 </div>
 

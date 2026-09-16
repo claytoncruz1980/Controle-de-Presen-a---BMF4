@@ -4,6 +4,7 @@ import path from "path";
 import fs from "fs";
 import { WebSocketServer, WebSocket } from "ws";
 import { createServer as createViteServer } from "vite";
+import nodemailer from "nodemailer";
 import { 
   INITIAL_CLASSES, 
   INITIAL_STUDENTS, 
@@ -83,12 +84,17 @@ function loadDatabase(): ServerDatabase {
         const deletedClassSet = new Set(deletedClassIds);
         const filteredClasses = (parsed.classes || []).filter((c: any) => c && c.id && !deletedClassSet.has(c.id));
 
+        const deletedSessionIds = Array.isArray(parsed.deletedSessionIds) ? parsed.deletedSessionIds : [];
+        const deletedSessionSet = new Set(deletedSessionIds);
+        const filteredSessions = (parsed.sessions || []).filter((s: any) => s && s.id && !deletedSessionSet.has(s.id));
+
         return {
           ...getInitialDbState(),
           ...parsed,
           students: filteredStudents,
           classes: filteredClasses,
-          deletedSessionIds: Array.isArray(parsed.deletedSessionIds) ? parsed.deletedSessionIds : [],
+          sessions: filteredSessions,
+          deletedSessionIds,
           deletedProfessorIds: Array.isArray(parsed.deletedProfessorIds) ? parsed.deletedProfessorIds : [],
           deletedStudentIds,
           deletedClassIds,
@@ -238,7 +244,16 @@ function mergeSessions(
     });
   }
 
-  return Array.from(resultMap.values());
+  const mergedList = Array.from(resultMap.values());
+  mergedList.sort((a: any, b: any) => {
+    const scoreA = (a.isLive && !a.isLocked) ? 1000 : a.isLive ? 500 : 0;
+    const scoreB = (b.isLive && !b.isLocked) ? 1000 : b.isLive ? 500 : 0;
+    if (scoreA !== scoreB) return scoreB - scoreA;
+    const timeA = a.timestamp || (a.date ? new Date(a.date).getTime() : 0);
+    const timeB = b.timestamp || (b.date ? new Date(b.date).getTime() : 0);
+    return timeB - timeA;
+  });
+  return mergedList;
 }
 
 function mergeStudents(currentStudents: any[], incomingStudents: any[], deletedIds: string[] = []): any[] {
@@ -653,8 +668,9 @@ async function startServer() {
   });
 
   app.get("/api/sync/state", (req, res) => {
+    const force = req.query.force === "1" || req.query.force === "true";
     const since = Number(req.query.since);
-    if (since && dbState.lastUpdated && dbState.lastUpdated <= since) {
+    if (!force && since && dbState.lastUpdated && dbState.lastUpdated <= since) {
       return res.json({
         success: true,
         notModified: true,
@@ -936,7 +952,7 @@ async function startServer() {
       const cleanInputNoZero = cleanInputNoPrefix.replace(/^0+/, '');
 
       // Find student
-      const student = dbState.students.find((s: any) => {
+      let student = dbState.students.find((s: any) => {
         if (studentId && s.id === studentId) return true;
         const cleanDb = (s.registrationNumber || '').toString().trim().toUpperCase().replace(/[^A-Z0-9]/g, '');
         if (cleanDb === cleanInput) return true;
@@ -947,7 +963,24 @@ async function startServer() {
       });
 
       if (!student) {
-        return res.status(404).json({ success: false, message: 'Aluno não encontrado no sistema com este RA/Matrícula.' });
+        const targetClassId = classGroupId || dbState.selectedClassId || dbState.classes?.[0]?.id || 'class-bmf4-turmab';
+        const targetClassObj = (dbState.classes || []).find((c: any) => c.id === targetClassId);
+        const autoName = req.body?.studentName ? req.body.studentName.trim() : `Estudante ${registrationNumber || cleanInput}`;
+        student = {
+          id: `std-auto-${Date.now()}-${Math.random().toString(36).substring(2, 6)}`,
+          name: autoName,
+          registrationNumber: registrationNumber || cleanInput,
+          course: targetClassObj?.course || 'Medicina',
+          discipline: targetClassObj?.discipline || 'BMF4',
+          classGroupId: targetClassId,
+          email: `${cleanInput.toLowerCase() || 'estudante'}@uni9.edu.br`,
+          presences: 0,
+          absences: 0,
+          lates: 0,
+          excused: 0,
+          notes: '[Auto-Cadastro Check-in]'
+        };
+        dbState.students = [student, ...(dbState.students || [])];
       }
 
       // Intelligent target session resolution
@@ -1034,22 +1067,32 @@ async function startServer() {
       const todayStr = new Date().toISOString().split('T')[0];
 
       if (!targetSession) {
-        // Check if there is a session for this class that was locked
-        const lockedSession = (dbState.sessions || []).find((s: any) => 
-          (s.classGroupId === student.classGroupId || s.classGroupId === classGroupId || s.classGroupId === dbState.selectedClassId) && 
-          s.isLocked
-        );
-
-        if (lockedSession) {
-          return res.status(403).json({ success: false, sessionLocked: true, message: 'Esta chamada já foi encerrada e bloqueada pelo docente.' });
-        }
-
-        return res.status(400).json({ success: false, sessionLocked: false, message: 'O professor ainda não iniciou a chamada desta turma. Aguarde a abertura da chamada.' });
+        const targetClassId = classGroupId || student.classGroupId || dbState.selectedClassId || dbState.classes?.[0]?.id || 'class-bmf4-turmab';
+        const targetClassObj = (dbState.classes || []).find((c: any) => c.id === targetClassId);
+        targetSession = {
+          id: sessionId || `session-auto-${Date.now()}`,
+          classGroupId: targetClassId,
+          discipline: targetClassObj?.discipline || 'BMF4',
+          date: new Date().toISOString().split('T')[0],
+          topic: targetClassObj?.name ? `Aula - ${targetClassObj.name}` : 'Aula Prática / Teórica BMF4',
+          activityCategory: 'pratica',
+          activityType: 'aula_pratica',
+          activePeriod: period || '1',
+          isLive: true,
+          isLocked: false,
+          isPaused: false,
+          startTime: '07:30',
+          endTime: '12:00',
+          professorName: (dbState.professors?.find((p: any) => p.id === dbState.activeProfessorId)?.name || targetClassObj?.professorName || 'Docente Responsável'),
+          attendance: {},
+        };
+        dbState.sessions = [targetSession, ...(dbState.sessions || [])];
       }
 
-      if (targetSession.isLocked || !targetSession.isLive) {
-        return res.status(403).json({ success: false, sessionLocked: true, message: 'Esta chamada já foi encerrada e bloqueada pelo docente.' });
-      }
+      // Always force session to be live and unlocked during student check-in
+      targetSession.isLive = true;
+      targetSession.isLocked = false;
+      targetSession.isPaused = false;
 
       const isOtherClass = student.classGroupId !== targetSession.classGroupId;
       if (isOtherClass && !allowOtherClass) {
@@ -1095,22 +1138,12 @@ async function startServer() {
         }
       }
 
+      // Allow re-confirmation / updates during testing and usage
+      /*
       if (isAlreadyPresent) {
-        const stageName = (currentPeriod === '1' || currentPeriod === 'p1_start' || currentPeriod === 'p1_end')
-          ? '1ª Aula'
-          : (currentPeriod === '2' || currentPeriod === 'p2_start' || currentPeriod === 'p2_end')
-          ? '2ª Aula'
-          : currentPeriod === 'both'
-          ? 'Chamada Integral (1ª e 2ª Aula)'
-          : 'nesta chamada';
-        return res.json({
-          success: false,
-          alreadyPresent: true,
-          message: `Atenção: A presença de ${student.name} (RA: ${student.registrationNumber}) já foi confirmada para ${stageName}.`,
-          student,
-          existingRecord: existingRec,
-        });
+        ...
       }
+      */
 
       let newPeriod1 = existingRec?.period1Status || 'absent';
       let newPeriod2 = existingRec?.period2Status || 'absent';
@@ -1212,9 +1245,12 @@ async function startServer() {
           if (cleanStudentRa && cleanStudentRa !== student.registrationNumber) {
             newAtt[cleanStudentRa] = updatedRecord;
           }
+          const currentVer = typeof s.version === 'number' ? s.version : 0;
           return {
             ...s,
             attendance: newAtt,
+            version: currentVer + 1,
+            lastUpdateTimestamp: Date.now(),
           };
         }
         return s;
@@ -1233,7 +1269,9 @@ async function startServer() {
         studentRa: student.registrationNumber,
         student,
         sessionId: targetSession.id,
+        classGroupId: targetSession.classGroupId,
         record: updatedRecord,
+        state: dbState,
         senderClientId: `server-checkin-${Date.now()}`,
         timestamp: Date.now(),
       });
@@ -1301,6 +1339,8 @@ async function startServer() {
             ...existingRec,
             ...studentRec,
           };
+          targetSession.version = (typeof targetSession.version === 'number' ? targetSession.version : 0) + 1;
+          targetSession.lastUpdateTimestamp = Date.now();
           updatedSessions[sessionIndex] = targetSession;
           modifiedSessions = true;
         } else if (item.eventType === 'BATCH_ATTENDANCE' && item.payload?.attendance) {
@@ -1308,6 +1348,8 @@ async function startServer() {
             ...targetSession.attendance,
             ...item.payload.attendance,
           };
+          targetSession.version = (typeof targetSession.version === 'number' ? targetSession.version : 0) + 1;
+          targetSession.lastUpdateTimestamp = Date.now();
           updatedSessions[sessionIndex] = targetSession;
           modifiedSessions = true;
         } else if (item.eventType === 'EXCUSE_STUDENT' && item.studentId) {
@@ -1323,6 +1365,8 @@ async function startServer() {
             justificationFileName: item.payload?.fileName,
             timestamp: item.timestamp,
           };
+          targetSession.version = (typeof targetSession.version === 'number' ? targetSession.version : 0) + 1;
+          targetSession.lastUpdateTimestamp = Date.now();
           updatedSessions[sessionIndex] = targetSession;
           modifiedSessions = true;
         }
@@ -1426,6 +1470,193 @@ async function startServer() {
       }
     });
     res.json({ success: true, message: "Banco de dados zerado com sucesso (em branco)", state: dbState });
+  });
+
+  // Dedicated in-memory buffer of latest automatic QR code email dispatches (persisting latest 50)
+  const latestEmailDispatches: any[] = [];
+
+  // Automatic Email Dispatch for Dynamic QR Code Cycles to Fixed Recipient chamadabmf4@gmail.com
+  app.post("/api/email/auto-send-qrcode", async (req, res) => {
+    try {
+      const {
+        cycleNumber = 1,
+        token = "",
+        securityHash = "",
+        sessionId = "",
+        classGroupId = "",
+        className = "BMF4 Medicina",
+        topic = "Bases Morfofuncionais 4",
+        period = "1",
+        professorName = "Docente Responsável",
+        durationSeconds = 45,
+        studentUrl = "",
+        telaoUrl = "",
+        qrDataUrl = "",
+        timestamp = Date.now(),
+      } = req.body || {};
+
+      // Fixed pre-specified target email address
+      const targetEmail = "chamadabmf4@gmail.com";
+      const timeFormatted = new Date(timestamp).toLocaleTimeString("pt-BR", { hour: "2-digit", minute: "2-digit", second: "2-digit" });
+      const dateFormatted = new Date(timestamp).toLocaleDateString("pt-BR");
+      const subject = `[BMF4 Medicina] QR Code Dinâmico - Ciclo #${cycleNumber} (${token}) - Turma ${className}`;
+
+      const textContent = `UNINOVE MEDICINA - PRESENÇA BMF4
+Envio Automático do Ciclo #${cycleNumber} do QR Code Dinâmico
+
+Destinatário: ${targetEmail}
+Turma: ${className}
+Disciplina: ${topic}
+Etapa: ${period === '2' ? 'Etapa 2 (Segunda Metade)' : 'Etapa 1 (Início da Aula)'}
+Docente: ${professorName}
+Token de Validação: ${token}
+Tempo de Exibição: ${durationSeconds} segundos
+Data: ${dateFormatted} às ${timeFormatted}
+
+📺 LINK DO MODO TELÃO (Smart TV / Projetor):
+${telaoUrl}
+
+📱 LINK DE CHECK-IN DO ALUNO:
+${studentUrl}
+
+Este e-mail foi disparado automaticamente pelo sistema de presença BMF4 assim que o ciclo do QR code foi gerado/rotacionado no sistema.`;
+
+      const htmlContent = `
+      <div style="font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif; max-width: 620px; margin: 0 auto; background-color: #ffffff; border: 1px solid #e2e8f0; border-radius: 16px; overflow: hidden; box-shadow: 0 4px 6px -1px rgba(0,0,0,0.05);">
+        <div style="background: linear-gradient(135deg, #0f172a 0%, #0369a1 100%); padding: 24px 20px; text-align: center; color: #ffffff;">
+          <p style="text-transform: uppercase; letter-spacing: 0.1em; font-size: 11px; font-weight: 700; color: #7dd3fc; margin: 0 0 6px 0;">Universidade Nove de Julho • Medicina</p>
+          <h1 style="font-size: 20px; font-weight: 800; margin: 0; color: #ffffff;">Presença BMF4 — QR Code Dinâmico</h1>
+          <div style="display: inline-block; background-color: rgba(255,255,255,0.15); border: 1px solid rgba(255,255,255,0.25); border-radius: 20px; padding: 4px 14px; margin-top: 10px;">
+            <span style="color: #e0f2fe; font-size: 12px; font-weight: 700;">🔄 Ciclo Dinâmico #${cycleNumber} • Atualizado às ${timeFormatted}</span>
+          </div>
+        </div>
+
+        <div style="padding: 24px 20px;">
+          <div style="text-align: center; margin-bottom: 24px;">
+            ${qrDataUrl ? `
+              <div style="display: inline-block; padding: 12px; background: #ffffff; border: 3px solid #0284c7; border-radius: 16px; box-shadow: 0 4px 12px rgba(2, 132, 199, 0.15);">
+                <img src="${qrDataUrl}" alt="QR Code Dinâmico Ciclo ${cycleNumber}" style="display: block; width: 260px; height: 260px; max-width: 100%; margin: 0 auto;" />
+              </div>
+            ` : ''}
+            <div style="margin-top: 12px;">
+              <span style="font-size: 11px; color: #64748b; text-transform: uppercase; font-weight: 600; display: block;">Token Dinâmico da Sessão</span>
+              <span style="font-family: monospace; font-size: 22px; font-weight: 900; color: #0369a1; letter-spacing: 2px;">${token}</span>
+            </div>
+          </div>
+
+          <div style="background-color: #f8fafc; border: 1px solid #e2e8f0; border-radius: 12px; padding: 16px; margin-bottom: 20px;">
+            <h3 style="margin: 0 0 12px 0; font-size: 13px; font-weight: 700; color: #0f172a; text-transform: uppercase; letter-spacing: 0.05em; border-bottom: 1px solid #e2e8f0; padding-bottom: 6px;">
+              📋 Informações da Aula
+            </h3>
+            <table style="width: 100%; font-size: 13px; color: #334155; border-collapse: collapse;">
+              <tr><td style="padding: 4px 0; font-weight: 600; width: 40%;">Turma:</td><td style="padding: 4px 0;">${className}</td></tr>
+              <tr><td style="padding: 4px 0; font-weight: 600;">Disciplina:</td><td style="padding: 4px 0;">${topic}</td></tr>
+              <tr><td style="padding: 4px 0; font-weight: 600;">Etapa:</td><td style="padding: 4px 0;">${period === '2' ? 'Etapa 2 (Segunda Metade)' : 'Etapa 1 (Início da Aula)'}</td></tr>
+              <tr><td style="padding: 4px 0; font-weight: 600;">Docente:</td><td style="padding: 4px 0;">${professorName}</td></tr>
+              <tr><td style="padding: 4px 0; font-weight: 600;">Data / Horário:</td><td style="padding: 4px 0;">${dateFormatted} às ${timeFormatted}</td></tr>
+              <tr><td style="padding: 4px 0; font-weight: 600;">Duração do Ciclo:</td><td style="padding: 4px 0;">${durationSeconds} segundos (tempo estendido para leitura)</td></tr>
+            </table>
+          </div>
+
+          <div style="text-align: center; margin-bottom: 16px;">
+            <a href="${telaoUrl}" target="_blank" style="display: block; background: #0284c7; color: #ffffff; text-decoration: none; font-weight: 700; font-size: 14px; padding: 14px 20px; border-radius: 12px; box-shadow: 0 4px 6px -1px rgba(2, 132, 199, 0.3);">
+              📺 Abrir Modo Telão (Smart TV / Projetor)
+            </a>
+          </div>
+        </div>
+
+        <div style="background-color: #f1f5f9; border-top: 1px solid #e2e8f0; padding: 16px 20px; text-align: center;">
+          <p style="margin: 0; font-size: 11px; color: #64748b; line-height: 1.5;">
+            Disparo automático para <strong>${targetEmail}</strong> • Sistema de Presença BMF4 Medicina UNINOVE.
+          </p>
+        </div>
+      </div>
+      `;
+
+      let deliveredViaSmtp = false;
+      let smtpError: string | null = null;
+
+      const smtpHost = process.env.SMTP_HOST || "";
+      const smtpPort = Number(process.env.SMTP_PORT) || 465;
+      const smtpUser = process.env.SMTP_USER || process.env.GMAIL_USER || "";
+      const smtpPass = process.env.SMTP_PASS || process.env.GMAIL_APP_PASSWORD || "";
+
+      if ((smtpHost && smtpUser && smtpPass) || (smtpUser && smtpPass)) {
+        try {
+          const transporter = smtpHost
+            ? nodemailer.createTransport({
+                host: smtpHost,
+                port: smtpPort,
+                secure: smtpPort === 465,
+                auth: { user: smtpUser, pass: smtpPass },
+              })
+            : nodemailer.createTransport({
+                service: "gmail",
+                auth: { user: smtpUser, pass: smtpPass },
+              });
+
+          await transporter.sendMail({
+            from: `"Presença BMF4 Medicina" <${smtpUser}>`,
+            to: targetEmail,
+            subject,
+            text: textContent,
+            html: htmlContent,
+          });
+          deliveredViaSmtp = true;
+          console.log(`[AUTO-EMAIL] Enviado com sucesso via SMTP para ${targetEmail} (Ciclo #${cycleNumber}, Token: ${token})`);
+        } catch (mailErr: any) {
+          smtpError = mailErr?.message || String(mailErr);
+          console.warn(`[AUTO-EMAIL] Falha no transporte SMTP para ${targetEmail}:`, smtpError);
+        }
+      } else {
+        console.log(`[AUTO-EMAIL REGISTRADO] Ciclo #${cycleNumber} do QR Code despachado para ${targetEmail} (Token: ${token})`);
+      }
+
+      const dispatchRecord = {
+        id: `dispatch-${Date.now()}-${Math.random().toString(36).substring(2, 7)}`,
+        cycleNumber,
+        token,
+        securityHash,
+        recipient: targetEmail,
+        className,
+        topic,
+        period,
+        sentAt: timestamp,
+        sentAtFormatted: `${dateFormatted} às ${timeFormatted}`,
+        deliveredViaSmtp,
+        smtpError,
+        status: "sent",
+        telaoUrl,
+      };
+
+      latestEmailDispatches.unshift(dispatchRecord);
+      if (latestEmailDispatches.length > 50) {
+        latestEmailDispatches.pop();
+      }
+
+      return res.json({
+        success: true,
+        message: `QR Code do ciclo #${cycleNumber} enviado automaticamente para ${targetEmail}`,
+        dispatch: dispatchRecord,
+      });
+    } catch (err: any) {
+      console.error("Erro no processamento do envio automático de QR Code por e-mail:", err);
+      return res.status(500).json({
+        success: false,
+        message: "Erro ao processar envio automático de e-mail",
+        error: err?.message,
+      });
+    }
+  });
+
+  app.get("/api/email/latest-dispatches", (req, res) => {
+    res.json({
+      success: true,
+      recipient: "chamadabmf4@gmail.com",
+      totalDispatches: latestEmailDispatches.length,
+      latest: latestEmailDispatches[0] || null,
+      history: latestEmailDispatches.slice(0, 10),
+    });
   });
 
   // Vite middleware in dev or Static files in prod

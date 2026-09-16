@@ -18,6 +18,7 @@ import {
 import { useLab, sortClassesAlphabetically } from '../context/LabContext';
 import { ClassGroup, CourseType } from '../types';
 import { FileImportModal } from './FileImportModal';
+import { BMF4_CLASS_IDS } from '../data/initialData';
 
 export const ClassesManagement: React.FC = () => {
   const { 
@@ -27,6 +28,7 @@ export const ClassesManagement: React.FC = () => {
     addClassGroup, 
     updateClassGroup, 
     deleteClassGroup,
+    restoreDefaultClasses,
     deleteAllStudentsFromClass,
     students,
     sessions,
@@ -116,8 +118,30 @@ export const ClassesManagement: React.FC = () => {
 
     const cleanTurma = turmaName.trim();
     const cleanDiscipline = disciplineName.trim();
+    const lowerName = cleanTurma.toLowerCase();
 
-    if (editingClass) {
+    // Validate against immutable BMF4 constants
+    let targetId = editingClass?.id;
+    if (!targetId) {
+      if (lowerName.includes('turma b') || lowerName.includes('bmf4')) {
+        targetId = BMF4_CLASS_IDS.TURMA_B;
+      } else if (lowerName.includes('turma a')) {
+        targetId = BMF4_CLASS_IDS.TURMA_A;
+      }
+    }
+
+    const existingById = targetId ? classes.find(c => c.id === targetId) : null;
+    const existingByName = classes.find(c => c.name.toLowerCase() === lowerName && c.id !== editingClass?.id);
+
+    if (existingById || existingByName) {
+      const activeId = existingById ? existingById.id : existingByName!.id;
+      updateClassGroup(activeId, {
+        name: cleanTurma,
+        discipline: cleanDiscipline,
+        code: cleanTurma.toUpperCase().slice(0, 10),
+      });
+      showFeedback(`Turma "${cleanTurma}" atualizada com sucesso (ID validado contra constante imutável)!`);
+    } else if (editingClass) {
       updateClassGroup(editingClass.id, {
         name: cleanTurma,
         discipline: cleanDiscipline,
@@ -204,14 +228,27 @@ export const ClassesManagement: React.FC = () => {
           </p>
         </div>
 
-        <button
-          id="btn-nova-turma"
-          onClick={handleOpenAdd}
-          className="flex items-center gap-1.5 px-4 py-2.5 rounded-xl bg-[#0f4c81] hover:bg-[#0c3c66] text-white text-xs font-bold shadow-xs transition-all active:scale-95 self-start sm:self-auto cursor-pointer"
-        >
-          <Plus className="w-4 h-4" />
-          <span>+ Cadastrar Turma</span>
-        </button>
+        <div className="flex items-center gap-2 self-start sm:self-auto">
+          <button
+            onClick={() => {
+              restoreDefaultClasses();
+              showFeedback("Turmas padrão (Turma A e Turma B) restauradas com sucesso!");
+            }}
+            className="flex items-center gap-1.5 px-3.5 py-2.5 rounded-xl bg-slate-100 hover:bg-slate-200 text-slate-700 text-xs font-bold shadow-xs transition-all active:scale-95 cursor-pointer"
+            title="Restaurar Turma A e Turma B padrão"
+          >
+            <FolderOpen className="w-4 h-4 text-[#0f4c81]" />
+            <span>Restaurar Turmas Padrão</span>
+          </button>
+          <button
+            id="btn-nova-turma"
+            onClick={handleOpenAdd}
+            className="flex items-center gap-1.5 px-4 py-2.5 rounded-xl bg-[#0f4c81] hover:bg-[#0c3c66] text-white text-xs font-bold shadow-xs transition-all active:scale-95 cursor-pointer"
+          >
+            <Plus className="w-4 h-4" />
+            <span>+ Cadastrar Turma</span>
+          </button>
+        </div>
       </div>
 
       {/* Filter and Sort Toolbar */}

@@ -30,6 +30,7 @@ import {
 } from 'lucide-react';
 import * as XLSX from 'xlsx';
 import { useLab } from '../context/LabContext';
+import { matchStudentClass } from '../utils/attendanceHelpers';
 import { StudentAvatar } from './StudentAvatar';
 import { Student } from '../types';
 import { exportModernGradesExcel } from '../utils/exportExcel';
@@ -180,9 +181,9 @@ export const GradesManagement: React.FC = () => {
   // Students strictly sorted alphabetically A-Z
   const classStudents = useMemo(() => {
     return students
-      .filter(s => s.classGroupId === selectedClassId)
+      .filter(s => matchStudentClass(s.classGroupId, selectedClassId, classes))
       .sort((a, b) => a.name.localeCompare(b.name, 'pt-BR', { numeric: true, sensitivity: 'base' }));
-  }, [students, selectedClassId]);
+  }, [students, selectedClassId, classes]);
 
   const showToast = (msg: string) => {
     setToastMessage(msg);

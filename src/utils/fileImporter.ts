@@ -3,12 +3,13 @@ import mammoth from 'mammoth';
 import * as pdfjsLib from 'pdfjs-dist';
 import { CourseType } from '../types';
 
-// Set up PDF.js worker fallback safely for Vite & browser environments
 if (typeof window !== 'undefined') {
   try {
-    const workerSrc = `https://cdnjs.cloudflare.com/ajax/libs/pdf.js/${(pdfjsLib as any).version || '3.11.174'}/pdf.worker.min.js`;
-    (pdfjsLib as any).GlobalWorkerOptions = (pdfjsLib as any).GlobalWorkerOptions || {};
-    (pdfjsLib as any).GlobalWorkerOptions.workerSrc = workerSrc;
+    const pdfAny = pdfjsLib as any;
+    const workerSrc = `https://cdnjs.cloudflare.com/ajax/libs/pdf.js/${pdfAny.version || '3.11.174'}/pdf.worker.min.js`;
+    if (pdfAny.GlobalWorkerOptions) {
+      pdfAny.GlobalWorkerOptions.workerSrc = workerSrc;
+    }
   } catch (e) {
     console.warn('PDF worker configuration notice:', e);
   }

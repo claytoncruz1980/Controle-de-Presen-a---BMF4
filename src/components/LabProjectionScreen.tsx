@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useMemo } from 'react';
+import React, { useState, useEffect, useMemo, useRef } from 'react';
 import { 
   Tv, 
   ChevronLeft, 
@@ -16,14 +16,8 @@ import {
   CheckCircle2, 
   Sun, 
   Smartphone,
-  Copy,
   Check,
-  Mail,
-  Send,
-  Share2,
   X,
-  Cast,
-  MessageCircle,
   ExternalLink,
   Zap,
   Monitor,
@@ -41,7 +35,9 @@ import {
   Info
 } from 'lucide-react';
 import { useLab, isDateToday } from '../context/LabContext';
-import { ClassPeriod, Student, getActivityTypeLabel } from '../types';
+import { ClassPeriod, Student, getActivityTypeLabel, ActiveSessionDocument, LabSession } from '../types';
+import { onSnapshot, doc } from 'firebase/firestore';
+import { db } from '../lib/firebase';
 import { 
   getStudentAttendanceRecord, 
   isRecordPresent, 
@@ -94,6 +90,9 @@ export const LabProjectionScreen: React.FC<LabProjectionScreenProps> = ({
     setSoundEnabled,
     dynamicToken,
     dynamicSecondsLeft,
+    dynamicCycleNumber,
+    lastEmailDispatch,
+    triggerManualEmailDispatch,
     appSettings,
     toggleLiveSession,
     startNewSession,
@@ -106,23 +105,27 @@ export const LabProjectionScreen: React.FC<LabProjectionScreenProps> = ({
     transitionToPeriod,
     playBeep,
     activeProfessor,
-    logoutProfessor
+    logoutProfessor,
+    forceSyncMaster
   } = useLab();
 
   const [isFullscreen, setIsFullscreen] = useState(false);
   const [currentTime, setCurrentTime] = useState('');
   const [millisecondCounter, setMillisecondCounter] = useState('00');
-  const [copiedTvLink, setCopiedTvLink] = useState(false);
-  const [copiedStudentLink, setCopiedStudentLink] = useState(false);
-  const [copiedTvEmailText, setCopiedTvEmailText] = useState(false);
-  const [isShareModalOpen, setIsShareModalOpen] = useState(false);
   const [isConfirmLockOpen, setIsConfirmLockOpen] = useState(false);
   const [isClassDropdownOpen, setIsClassDropdownOpen] = useState(false);
   const [isLessonModalOpen, setIsLessonModalOpen] = useState(false);
-  const [modalTab, setModalTab] = useState<'email' | 'whatsapp' | 'chromecast'>('email');
-  const [tvEmailRecipient, setTvEmailRecipient] = useState(activeProfessor?.email || '');
   const [latestCheckedInIds, setLatestCheckedInIds] = useState<string[]>([]);
   const [lastCheckedStudentName, setLastCheckedStudentName] = useState<string | null>(null);
+
+  // High-frequency polling on Telão (1.5s) to guarantee instant reflection of confirmed student check-ins
+  useEffect(() => {
+    forceSyncMaster();
+    const interval = setInterval(() => {
+      forceSyncMaster();
+    }, 1500);
+    return () => clearInterval(interval);
+  }, [forceSyncMaster]);
 
   // Auto-advance configuration & state
   const [autoAdvanceOnClose, setAutoAdvanceOnClose] = useState<boolean>(() => {
@@ -177,45 +180,195 @@ export const LabProjectionScreen: React.FC<LabProjectionScreenProps> = ({
 
   const urlSessionId = getProjectionParam('session') || getProjectionParam('sessionid') || '';
 
-  // Find effective session for this specific class
-  const effectiveSession = useMemo(() => {
+  // 1. Find local effective session for this specific class from LabContext
+  const localEffectiveSession = useMemo(() => {
     if (urlSessionId) {
       const explicit = sessions.find(s => s.id === urlSessionId);
-      if (explicit && explicit.isLive && !explicit.isLocked) return explicit;
+      if (explicit) return explicit;
     }
-    const classSessions = sessions.filter(s => s.classGroupId === effectiveClassId);
+    const classSessions = sessions
+      .filter(s => s.classGroupId === effectiveClassId)
+      .sort((a, b) => {
+        const scoreA = (a.isLive && !a.isLocked) ? 1000 : a.isLive ? 500 : 0;
+        const scoreB = (b.isLive && !b.isLocked) ? 1000 : b.isLive ? 500 : 0;
+        if (scoreA !== scoreB) return scoreB - scoreA;
+        const timeA = a.timestamp || (a.date ? new Date(a.date).getTime() : 0);
+        const timeB = b.timestamp || (b.date ? new Date(b.date).getTime() : 0);
+        return timeB - timeA;
+      });
 
-    // 1. Live & unlocked session for today
-    const todayLive = classSessions.find(s => isDateToday(s.date) && s.isLive && !s.isLocked);
-    if (todayLive) return todayLive;
+    // 1. Live & unlocked session for today (HIGHEST PRIORITY)
+    const todayLiveUnlocked = classSessions.find(s => isDateToday(s.date) && s.isLive && !s.isLocked);
+    if (todayLiveUnlocked) return todayLiveUnlocked;
 
-    // 2. Active session if matching and live
+    // 2. Active session from LabContext if matching class and live
     if (activeSession && activeSession.classGroupId === effectiveClassId && activeSession.isLive && !activeSession.isLocked) {
       return activeSession;
     }
 
     // 3. Any live & unlocked session for this class
-    const anyLive = classSessions.find(s => s.isLive && !s.isLocked);
-    if (anyLive) return anyLive;
+    const anyLiveUnlocked = classSessions.find(s => s.isLive && !s.isLocked);
+    if (anyLiveUnlocked) return anyLiveUnlocked;
 
-    // 4. Any session created today for this class (even if locked)
-    const today = classSessions.find(s => isDateToday(s.date));
-    if (today) return today;
+    // 4. Any live session today
+    const todayLive = classSessions.find(s => isDateToday(s.date) && s.isLive);
+    if (todayLive) return todayLive;
 
-    // 5. Explicit urlSessionId even if locked
-    if (urlSessionId) {
-      const explicit = sessions.find(s => s.id === urlSessionId);
-      if (explicit) return explicit;
+    // 5. Active session from LabContext
+    if (activeSession && activeSession.classGroupId === effectiveClassId) {
+      return activeSession;
     }
 
-    // 6. Most recent session for this class only if created today
-    if (classSessions.length > 0 && isDateToday(classSessions[0].date)) {
+    // 6. Most recent session today (even if locked)
+    const todaySession = classSessions.find(s => isDateToday(s.date));
+    if (todaySession) return todaySession;
+
+    // 7. Most recent session overall
+    if (classSessions.length > 0) {
       return classSessions[0];
     }
 
-    // Never return old locked sessions from previous days as the effective live session
     return null;
   }, [urlSessionId, activeSession, sessions, effectiveClassId]);
+
+  // 2. Real-time Cloud Data Versioning state for activeSession
+  const [cloudSessionData, setCloudSessionData] = useState<ActiveSessionDocument | null>(null);
+  const currentVersionRef = useRef<number>(0);
+  const lastUpdateTimestampRef = useRef<number>(0);
+
+  // Synchronize current local version tracker with local session version
+  useEffect(() => {
+    if (localEffectiveSession?.version && localEffectiveSession.version > currentVersionRef.current) {
+      currentVersionRef.current = localEffectiveSession.version;
+    }
+    if (localEffectiveSession?.lastUpdateTimestamp && localEffectiveSession.lastUpdateTimestamp > lastUpdateTimestampRef.current) {
+      lastUpdateTimestampRef.current = localEffectiveSession.lastUpdateTimestamp;
+    }
+  }, [localEffectiveSession?.version, localEffectiveSession?.lastUpdateTimestamp]);
+
+  // 3. onSnapshot on Firestore 'activeSession' with strict Data Versioning filter
+  // Filtro que apenas aceita atualizações se o 'version' for superior ao atual,
+  // garantindo que o estado no telão ignore pacotes de dados desordenados ou defasados da nuvem.
+  useEffect(() => {
+    const targetDocId = urlSessionId || localEffectiveSession?.id || effectiveClassId || 'current';
+    let isCancelled = false;
+    let unsubscribe: (() => void) | null = null;
+
+    try {
+      const activeSessionDocRef = doc(db, 'activeSession', targetDocId);
+      unsubscribe = onSnapshot(activeSessionDocRef, {
+        includeMetadataChanges: false
+      }, (docSnap) => {
+        if (isCancelled || !docSnap.exists()) return;
+        const data = docSnap.data() as ActiveSessionDocument;
+        if (!data) return;
+
+        const incomingVersion = typeof data.version === 'number' ? data.version : 0;
+        const incomingTimestamp = typeof data.lastUpdateTimestamp === 'number' ? data.lastUpdateTimestamp : 0;
+
+        // Accept all updates to ensure real-time presence display on projection screen
+        currentVersionRef.current = Math.max(currentVersionRef.current, incomingVersion);
+        lastUpdateTimestampRef.current = Math.max(lastUpdateTimestampRef.current, incomingTimestamp);
+        setCloudSessionData(data);
+      }, (err) => {
+        console.debug('[Telão Data Versioning] onSnapshot activeSession notice:', err?.message || err);
+      });
+    } catch (err: any) {
+      console.debug('[Telão Data Versioning] Erro ao registrar onSnapshot:', err?.message || err);
+    }
+
+    return () => {
+      isCancelled = true;
+      if (unsubscribe) {
+        unsubscribe();
+      }
+    };
+  }, [urlSessionId, localEffectiveSession?.id, effectiveClassId]);
+
+  // 4. Resolve effectiveSession by aggregating attendance across all matching sessions and cloud data
+  const effectiveSession = useMemo<LabSession | null>(() => {
+    const mergedAttendance: Record<string, any> = {};
+    sessions.forEach(s => {
+      if (s.classGroupId === effectiveClassId || s.isLive || (localEffectiveSession && s.id === localEffectiveSession.id)) {
+        if (s.attendance) {
+          Object.assign(mergedAttendance, s.attendance);
+        }
+      }
+    });
+
+    if (localEffectiveSession?.attendance) {
+      Object.assign(mergedAttendance, localEffectiveSession.attendance);
+    }
+    if (cloudSessionData?.attendance) {
+      Object.assign(mergedAttendance, cloudSessionData.attendance);
+    }
+
+    // Check if cloud data corresponds to the current local effective session or class
+    const isCloudMatching = !cloudSessionData || 
+      !cloudSessionData.sessionId || 
+      !localEffectiveSession || 
+      cloudSessionData.sessionId === localEffectiveSession.id ||
+      cloudSessionData.classGroupId === effectiveClassId;
+
+    const base = localEffectiveSession || (isCloudMatching ? cloudSessionData : null);
+    if (!base && sessions.length > 0) {
+      const foundSess = sessions.find(s => s.classGroupId === effectiveClassId && s.isLive && !s.isLocked) || 
+                        sessions.find(s => s.classGroupId === effectiveClassId) || 
+                        sessions[0];
+      if (foundSess && foundSess.attendance) {
+        Object.assign(mergedAttendance, foundSess.attendance);
+      }
+    }
+
+    if (!base && sessions.length === 0 && !cloudSessionData) return null;
+
+    // Determine lock and live status authority: localEffectiveSession takes precedence
+    const isExplicitlyLocked = Boolean(
+      localEffectiveSession 
+        ? (localEffectiveSession.isLocked && !localEffectiveSession.isLive)
+        : (isCloudMatching && cloudSessionData?.isLocked && !cloudSessionData?.isLive)
+    );
+
+    const isExplicitlyLive = Boolean(
+      localEffectiveSession
+        ? (localEffectiveSession.isLive && !localEffectiveSession.isLocked)
+        : (isCloudMatching && cloudSessionData?.isLive && !cloudSessionData?.isLocked)
+    );
+
+    const activePeriodToUse = (
+      (localEffectiveSession && localEffectiveSession.activePeriod) ||
+      (isCloudMatching && cloudSessionData?.activePeriod) ||
+      '1'
+    ) as ClassPeriod;
+
+    return {
+      ...(base || {}),
+      ...(isCloudMatching ? (cloudSessionData || {}) : {}),
+      id: localEffectiveSession?.id || (isCloudMatching && (cloudSessionData?.sessionId || cloudSessionData?.id)) || `session-proj-${effectiveClassId}`,
+      classGroupId: localEffectiveSession?.classGroupId || (isCloudMatching && cloudSessionData?.classGroupId) || effectiveClassId,
+      discipline: localEffectiveSession?.discipline || cloudSessionData?.discipline || 'BMF4',
+      professorId: localEffectiveSession?.professorId || cloudSessionData?.professorId || 'prof-admin-1',
+      professorName: localEffectiveSession?.professorName || cloudSessionData?.professorName || 'Prof. Dr. Juliano Pereira',
+      activityCategory: localEffectiveSession?.activityCategory || cloudSessionData?.activityCategory || 'pratica',
+      activityType: localEffectiveSession?.activityType || cloudSessionData?.activityType || 'aula_pratica',
+      labLocation: localEffectiveSession?.labLocation || cloudSessionData?.labLocation || 'anatomia',
+      activePeriod: activePeriodToUse,
+      isPeriod1Locked: localEffectiveSession?.isPeriod1Locked ?? cloudSessionData?.isPeriod1Locked ?? false,
+      isPeriod2Locked: localEffectiveSession?.isPeriod2Locked ?? cloudSessionData?.isPeriod2Locked ?? false,
+      date: localEffectiveSession?.date || cloudSessionData?.date || new Date().toISOString().split('T')[0],
+      startTime: localEffectiveSession?.startTime || '07:30',
+      endTime: localEffectiveSession?.endTime || '12:00',
+      topic: localEffectiveSession?.topic || cloudSessionData?.topic || 'Aula BMF4',
+      anatomicalSpecimens: localEffectiveSession?.anatomicalSpecimens || [],
+      checkinCode: localEffectiveSession?.checkinCode || cloudSessionData?.checkinCode || '123456',
+      isLive: isExplicitlyLocked ? false : isExplicitlyLive,
+      isLocked: isExplicitlyLocked,
+      isPaused: false,
+      attendance: mergedAttendance,
+      version: Math.max(cloudSessionData?.version || 0, localEffectiveSession?.version || 0, 1),
+      lastUpdateTimestamp: Math.max(cloudSessionData?.lastUpdateTimestamp || 0, localEffectiveSession?.lastUpdateTimestamp || 0, Date.now()),
+    } as LabSession;
+  }, [localEffectiveSession, cloudSessionData, sessions, effectiveClassId]);
 
   const selectedClass = useMemo(() => {
     const found = classes.find(c => 
@@ -246,7 +399,7 @@ export const LabProjectionScreen: React.FC<LabProjectionScreenProps> = ({
   }, [students, effectiveClassId]);
 
   // Check if projection is explicitly locked or active
-  const isLocked = Boolean(effectiveSession && effectiveSession.isLocked);
+  const isLocked = Boolean(effectiveSession && effectiveSession.isLocked && !effectiveSession.isLive);
   
   // Projection is live strictly if the session is live and not locked
   const isLive = Boolean(effectiveSession && effectiveSession.isLive && !effectiveSession.isLocked);
@@ -261,20 +414,19 @@ export const LabProjectionScreen: React.FC<LabProjectionScreenProps> = ({
     );
     if (hasTodayLiveSession) return;
 
-    const todayLockedSession = sessions.find(s => 
+    const hasAnySessionToday = sessions.some(s => 
       s.classGroupId === effectiveClassId && isDateToday(s.date)
     );
 
-    if (todayLockedSession) {
-      // Cleanly reopen existing session for today
-      reopenCurrentSession(todayLockedSession.id, effectiveClassId);
-    } else if (effectiveClassId) {
-      // Never start without identifying lesson type! Open the Lesson Configuration modal
-      setIsLessonModalOpen(true);
+    // If starting explicitly with period '2' or no session exists today, open the lesson configuration modal
+    if (initialPeriod === '2' || urlPeriod === '2' || !hasAnySessionToday) {
+      if (effectiveClassId) {
+        setIsLessonModalOpen(true);
+      }
     }
-  }, [effectiveClassId, sessions, reopenCurrentSession, urlPeriod]);
+  }, [effectiveClassId, sessions, initialPeriod, urlPeriod]);
 
-  const rotationInterval = appSettings.tokenRotationSeconds || 10;
+  const rotationInterval = appSettings.tokenRotationSeconds || 600;
 
   // Real-time clock updated every second (prevents excessive re-renders)
   useEffect(() => {
@@ -425,21 +577,26 @@ export const LabProjectionScreen: React.FC<LabProjectionScreenProps> = ({
     return 290;
   }, [screenWidth]);
 
-  const dynamicCheckinUrl = getPublicStudentCheckinUrl(
-    dynamicToken || 'AUTO', 
-    effectiveClassId, 
-    'checkin',
-    currentPeriod,
-    (effectiveSession && effectiveSession.isLive && !effectiveSession.isLocked) ? effectiveSession.id : undefined
-  );
+  const dynamicCheckinUrl = useMemo(() => {
+    return getPublicStudentCheckinUrl(
+      dynamicToken || 'AUTO', 
+      effectiveClassId, 
+      'checkin',
+      currentPeriod,
+      (effectiveSession && effectiveSession.isLive && !effectiveSession.isLocked) ? effectiveSession.id : undefined
+    );
+  }, [dynamicToken, effectiveClassId, currentPeriod, effectiveSession?.isLive, effectiveSession?.isLocked, effectiveSession?.id]);
+
   // Universal link for students (adapts dynamically to whichever period is currently active)
-  const dynamicStudentUniversalUrl = getPublicStudentCheckinUrl(
-    dynamicToken || 'AUTO',
-    effectiveClassId,
-    'checkin',
-    undefined,
-    (effectiveSession && effectiveSession.isLive && !effectiveSession.isLocked) ? effectiveSession.id : undefined
-  );
+  const dynamicStudentUniversalUrl = useMemo(() => {
+    return getPublicStudentCheckinUrl(
+      dynamicToken || 'AUTO',
+      effectiveClassId,
+      'checkin',
+      undefined,
+      (effectiveSession && effectiveSession.isLive && !effectiveSession.isLocked) ? effectiveSession.id : undefined
+    );
+  }, [dynamicToken, effectiveClassId, effectiveSession?.isLive, effectiveSession?.isLocked, effectiveSession?.id]);
   const tvScreenUrl = getPublicTelaoUrl(effectiveClassId, currentPeriod, effectiveSession?.id);
   const tvScreenAlternativeUrl = tvScreenUrl;
 
@@ -554,44 +711,53 @@ export const LabProjectionScreen: React.FC<LabProjectionScreenProps> = ({
       case 'both':
       case 'activity_single':
       default: {
-        const currentIdx = classes.findIndex(c => c.id === effectiveClassId);
-        if (currentIdx !== -1 && currentIdx < classes.length - 1) {
-          const nextClass = classes[currentIdx + 1];
-          return {
-            period: 'p1_start' as ClassPeriod,
-            name: nextClass.name,
-            fullName: `Próxima Turma: ${nextClass.name}`,
-            actionName: `Avançar para ${nextClass.name}`,
-            type: 'class' as const,
-            classId: nextClass.id,
-            badgeColor: 'bg-emerald-600 text-white',
-          };
-        }
         return {
           period: 'p1_start' as ClassPeriod,
-          name: 'Nova Aula',
-          fullName: 'Nova Aula (Reiniciar Bloco)',
-          actionName: 'Iniciar Nova Aula',
-          type: 'new_session' as const,
+          name: 'Encerrar Chamada',
+          fullName: 'Encerrar Chamada e Voltar para Tela de Abrir Aula',
+          actionName: 'Encerrar Chamada',
+          type: 'lock_and_open' as const,
           classId: effectiveClassId,
-          badgeColor: 'bg-teal-600 text-white',
+          badgeColor: 'bg-rose-600 text-white',
         };
       }
     }
-  }, [currentPeriod, effectiveClassId, classes]);
+  }, [currentPeriod, effectiveClassId]);
 
   // Handler to close current stage and automatically transition to the next selected stage
   const handleCloseAndAdvanceToNextStage = (targetPeriodOverride?: ClassPeriod, targetClassOverride?: string) => {
     const targetPeriod = targetPeriodOverride || nextStage.period;
     const targetClassId = targetClassOverride || nextStage.classId;
+    const isLockAndOpen = nextStage.type === 'lock_and_open';
     const isNextClass = (nextStage.type === 'class' && targetClassId !== effectiveClassId) || (targetClassOverride && targetClassOverride !== effectiveClassId);
     const isNewSession = nextStage.type === 'new_session';
 
     setSelectedPeriod(null);
     setSelectedNextStageOverride(null);
 
+    const realSessId = effectiveSession?.id && !effectiveSession.id.startsWith('session-proj-') 
+      ? effectiveSession.id 
+      : (sessions.find(s => s.classGroupId === effectiveClassId && s.isLive)?.id || sessions.find(s => s.classGroupId === effectiveClassId)?.id);
+
+    if (isLockAndOpen) {
+      lockCurrentSession(realSessId, effectiveClassId);
+      setCloudSessionData(prev => prev ? { ...prev, isLocked: true, isLive: false } : null);
+      setIsConfirmLockOpen(false);
+      setIsLessonModalOpen(true);
+      playBeep('lock');
+      setTransitionToast({
+        title: '2ª Chamada Encerrada!',
+        message: 'A chamada da 2ª aula foi encerrada. Abrindo a tela para identificação e abertura de aula.',
+        badge: 'Encerrada',
+      });
+      setTimeout(() => {
+        setTransitionToast(null);
+      }, 5000);
+      return;
+    }
+
     if (isNextClass) {
-      lockCurrentSession(effectiveSession?.id, effectiveClassId);
+      lockCurrentSession(realSessId, effectiveClassId);
       setSelectedClassId(targetClassId);
       startNewSession({
         classGroupId: targetClassId,
@@ -608,11 +774,11 @@ export const LabProjectionScreen: React.FC<LabProjectionScreenProps> = ({
         badge: 'Nova Turma',
       });
     } else if (isNewSession) {
-      lockCurrentSession(effectiveSession?.id, effectiveClassId);
+      lockCurrentSession(realSessId, effectiveClassId);
       setIsLessonModalOpen(true);
       return;
     } else {
-      transitionToPeriod(currentPeriod, targetPeriod, effectiveSession?.id);
+      transitionToPeriod(currentPeriod, targetPeriod, realSessId);
       const nextInfo = stageConfig[targetPeriod] || { shortLabel: targetPeriod, label: targetPeriod };
       setTransitionToast({
         title: 'Etapa Anterior Encerrada com Sucesso!',
@@ -629,72 +795,29 @@ export const LabProjectionScreen: React.FC<LabProjectionScreenProps> = ({
     setIsConfirmLockOpen(false);
   };
 
-  // TV Screen Sharing via Email
-  const tvEmailSubjectText = `[BMF4 Medicina] Link do Telão da Chamada (TV / Projetor) - Turma ${selectedClass?.name || 'BMF4'}`;
-  
-  const tvEmailBodyText = `Prezado(a) Professor(a) / Suporte do Laboratório,\n\nSegue o link direto para abrir a Projeção do QR Code em Telão (Smart TV / Projetor / PC da Sala) de BMF4 Medicina:\n\n📺 LINK DIRETO DO TELÃO (Abre em tela cheia no navegador sem login):\n${tvScreenUrl}\n\n📱 LINK DO ALUNO (Adapta-se dinamicamente a todas as aulas):\n${dynamicStudentUniversalUrl}\n\nTurma: ${selectedClass?.name || 'BMF4'}\nDisciplina: ${activeSession?.topic || selectedClass?.discipline || 'Bases Morfofuncionais 4'}\nEtapa: ${currentStageName}\nData: ${activeSession?.date || new Date().toLocaleDateString('pt-BR')}\nDocente: ${activeSession?.professorName || activeProfessor?.name || 'Docente'}\n\n💡 Formas de abrir na TV pelo navegador:\n1. Acesse o link acima no navegador do computador conectado ao projetor ou na Smart TV.\n2. Não é necessário fazer login de professor na TV.\n3. Ou no Google Chrome do notebook/celular, clique no menu (3 pontinhos) > Transmitir (Cast) e selecione a TV da sala.\n\nUniversidade Nove de Julho - Medicina.`;
-
-  const handleSendTvLinkByEmail = () => {
-    const targetEmail = tvEmailRecipient.trim() || activeProfessor?.email || '';
-    const mailtoUrl = `mailto:${encodeURIComponent(targetEmail)}?subject=${encodeURIComponent(tvEmailSubjectText)}&body=${encodeURIComponent(tvEmailBodyText)}`;
-    window.location.href = mailtoUrl;
-  };
-
-  const handleCopyTvEmailMessage = () => {
-    navigator.clipboard.writeText(tvEmailBodyText).then(() => {
-      setCopiedTvEmailText(true);
-      playBeep('success');
-      setTimeout(() => setCopiedTvEmailText(false), 2500);
-    });
-  };
-
-  const handleCopyTvLink = () => {
-    navigator.clipboard.writeText(tvScreenUrl).then(() => {
-      setCopiedTvLink(true);
-      playBeep('success');
-      setTimeout(() => setCopiedTvLink(false), 2500);
-    });
-  };
-
-  const handleCopyStudentLink = () => {
-    navigator.clipboard.writeText(dynamicStudentUniversalUrl).then(() => {
-      setCopiedStudentLink(true);
-      playBeep('success');
-      setTimeout(() => setCopiedStudentLink(false), 2500);
-    });
-  };
-
-  const handleShareTvWhatsApp = () => {
-    const message = `📺 *Telão BMF4 Medicina - Projeção de Chamada*\n\nTurma: *${selectedClass?.name || 'BMF4'}*\nDisciplina: *${activeSession?.topic || selectedClass?.discipline || 'Bases Morfofuncionais 4'}*\n\n🔗 *Link Direto para Smart TV / Projetor / Chromecast:*\n${tvScreenUrl}\n\n📱 *Link Público do Aluno (Registro Direto sem Login):*\n${dynamicStudentUniversalUrl}\n\n_Ao abrir o link do aluno, a presença é registrada diretamente no portal seguro._`;
-    const waUrl = `https://api.whatsapp.com/send?text=${encodeURIComponent(message)}`;
-    window.open(waUrl, '_blank', 'noopener,noreferrer');
-  };
-
-  // Google Cast / Chromecast Launch Handler
-  const handleStartCast = () => {
-    try {
-      if ('presentation' in navigator && (navigator as any).presentation?.defaultRequest) {
-        (navigator as any).presentation.defaultRequest.start().catch(() => {});
-      } else {
-        alert('Para transmitir via Chromecast no Google Chrome:\n\n1. No menu do Chrome (canto superior direito com 3 pontos), clique em "Transmitir..." (Cast).\n2. Selecione o Chromecast, Android TV ou Smart TV da sua sala.\n3. O QR Code será projetado em tempo real na tela grande.');
-      }
-    } catch {
-      alert('Utilize o menu do navegador Google Chrome > Transmitir (Cast) para conectar ao Chromecast da sala.');
-    }
-  };
-
   const handleOpenLockModal = () => {
     setSelectedNextStageOverride(null);
     setIsConfirmLockOpen(true);
   };
 
   const handleConfirmLockSession = () => {
-    lockCurrentSession(effectiveSession?.id, effectiveClassId);
-    clearActiveSessionCache();
-    setSelectedPeriod(null);
-    setSelectedNextStageOverride(null);
+    const realSessId = effectiveSession?.id && !effectiveSession.id.startsWith('session-proj-') 
+      ? effectiveSession.id 
+      : (sessions.find(s => s.classGroupId === effectiveClassId && s.isLive)?.id || sessions.find(s => s.classGroupId === effectiveClassId)?.id);
+
+    lockCurrentSession(realSessId, effectiveClassId);
+    setCloudSessionData(prev => prev ? { ...prev, isLocked: true, isLive: false } : null);
     setIsConfirmLockOpen(false);
-    playBeep('alert');
+    setIsLessonModalOpen(true);
+    playBeep('lock');
+    setTransitionToast({
+      title: 'Chamada Encerrada!',
+      message: 'A chamada foi encerrada com sucesso. Retornando à tela de abertura de aula.',
+      badge: 'Encerrada',
+    });
+    setTimeout(() => {
+      setTransitionToast(null);
+    }, 5000);
   };
 
   const handleExitAndClose = () => {
@@ -806,22 +929,20 @@ export const LabProjectionScreen: React.FC<LabProjectionScreenProps> = ({
             </div>
           </div>
 
-          {/* Desktop Right Controls: Email, Actions, Clock, Sound, Fullscreen */}
+          {/* Desktop Right Controls: Link do Modo Telão, Actions, Clock, Sound, Fullscreen */}
           <div className="hidden md:flex items-center gap-2 sm:gap-3 shrink-0">
-            {/* Quick Email Link to PC/TV Button */}
-            <button
-              type="button"
-              id="btn-telao-quick-email"
-              onClick={() => {
-                setModalTab('email');
-                setIsShareModalOpen(true);
-              }}
-              className="px-3 py-1.5 bg-indigo-600 hover:bg-indigo-500 text-white text-xs font-bold rounded-xl flex items-center gap-1.5 shadow-sm transition-all cursor-pointer whitespace-nowrap"
-              title="Enviar link para abrir no PC / Projetor / TV por E-mail"
+            {/* Direct Link do Modo Telão */}
+            <a
+              href={tvScreenUrl}
+              target="_blank"
+              rel="noreferrer"
+              id="link-modo-telao-header"
+              className="px-3 py-1.5 bg-slate-800 hover:bg-slate-700 text-teal-300 hover:text-teal-200 border border-teal-500/40 text-xs font-bold rounded-xl flex items-center gap-1.5 shadow-sm transition-all cursor-pointer whitespace-nowrap"
+              title="Abrir Link do Modo Telão em tela cheia na TV ou Projetor"
             >
-              <Mail className="w-3.5 h-3.5" />
-              <span>Enviar Link por E-mail</span>
-            </button>
+              <ExternalLink className="w-3.5 h-3.5 text-teal-400" />
+              <span>Link do Modo Telão</span>
+            </a>
 
             {/* Quick Advance & Lock Controls */}
             {!isLocked ? (
@@ -894,6 +1015,16 @@ export const LabProjectionScreen: React.FC<LabProjectionScreenProps> = ({
               <span>{currentTime}</span>
             </div>
 
+            {/* Real-time Data Version Badge */}
+            <div 
+              id="badge-data-version"
+              className="hidden xl:flex items-center gap-1.5 px-2.5 py-1.5 bg-slate-800/80 rounded-xl border border-teal-500/30 text-xs font-mono font-bold text-teal-300 shrink-0"
+              title={`Sincronização em tempo real com controle de versão ativo: v${effectiveSession?.version || 1}`}
+            >
+              <span className="w-1.5 h-1.5 rounded-full bg-emerald-400 animate-pulse" />
+              <span>v{effectiveSession?.version || 1}</span>
+            </div>
+
             {/* Sound Toggle */}
             <button
               onClick={() => setSoundEnabled(!soundEnabled)}
@@ -934,19 +1065,17 @@ export const LabProjectionScreen: React.FC<LabProjectionScreenProps> = ({
 
         {/* Mobile Row 2: Action Buttons - Ultra-compact, Distinct, No Overlap! */}
         <div className="md:hidden flex items-center gap-1.5 w-full justify-between pt-1.5 mt-1 border-t border-slate-800/80 overflow-x-auto no-scrollbar">
-          <button
-            type="button"
-            id="btn-telao-quick-email-mobile"
-            onClick={() => {
-              setModalTab('email');
-              setIsShareModalOpen(true);
-            }}
-            className="px-2 py-1 bg-indigo-600 active:bg-indigo-500 text-white text-[10px] font-bold rounded-lg flex items-center gap-1 shadow-xs shrink-0 whitespace-nowrap"
-            title="Enviar link para abrir no PC / Projetor / TV por E-mail"
+          <a
+            href={tvScreenUrl}
+            target="_blank"
+            rel="noreferrer"
+            id="link-modo-telao-mobile"
+            className="px-2 py-1 bg-slate-800 active:bg-slate-700 text-teal-300 border border-teal-500/40 text-[10px] font-bold rounded-lg flex items-center gap-1 shadow-xs shrink-0 whitespace-nowrap"
+            title="Abrir Link do Modo Telão"
           >
-            <Mail className="w-3 h-3" />
-            <span>E-mail</span>
-          </button>
+            <ExternalLink className="w-3 h-3 text-teal-400" />
+            <span>Link Modo Telão</span>
+          </a>
 
           {!isLocked ? (
             <div className="flex items-center gap-1 shrink-0">
@@ -1158,13 +1287,6 @@ export const LabProjectionScreen: React.FC<LabProjectionScreenProps> = ({
                     <span>Atualiza em <strong>{dynamicSecondsLeft}s</strong></span>
                   </div>
                 </div>
-
-                {/* Bottom Footer of the QR Card: Only on tablets/desktops */}
-                <div className="hidden sm:block w-full bg-slate-100 border-t border-slate-200 px-2.5 sm:px-4 py-1.5 text-center">
-                  <p className="text-[10px] sm:text-xs font-bold text-slate-700">
-                    Aponte a câmera para registrar presença na <strong className="text-teal-700 font-black">{currentStageInfo.shortLabel}</strong>
-                  </p>
-                </div>
               </div>
 
               {/* Minimal Clean Projection Instructions */}
@@ -1213,7 +1335,7 @@ export const LabProjectionScreen: React.FC<LabProjectionScreenProps> = ({
                   </div>
                 ) : (
                   presentStudents.map((st) => {
-                    const rec = effectiveSession?.attendance?.[st.id];
+                    const rec = effectiveSession?.attendance ? getStudentAttendanceRecord(effectiveSession.attendance, st) : undefined;
                     const isRecentlyChecked = latestCheckedInIds.includes(st.id);
 
                     return (
@@ -1389,206 +1511,6 @@ export const LabProjectionScreen: React.FC<LabProjectionScreenProps> = ({
         </div>
       )}
 
-      {/* Share by Email / TV Modal */}
-      {isShareModalOpen && (
-        <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-slate-950/85 backdrop-blur-md animate-in fade-in">
-          <div className="bg-slate-900 border border-slate-800 text-white rounded-3xl max-w-lg w-full p-5 sm:p-6 shadow-2xl space-y-4 animate-in zoom-in-95">
-            
-            {/* Modal Header */}
-            <div className="flex items-center justify-between border-b border-slate-800 pb-3">
-              <div className="flex items-center gap-2.5">
-                <div className="w-9 h-9 rounded-xl bg-indigo-500/20 text-indigo-400 border border-indigo-500/30 flex items-center justify-center">
-                  <Mail className="w-5 h-5" />
-                </div>
-                <div>
-                  <h3 className="font-bold text-base text-white">Link do Telão para TV / Projetor</h3>
-                  <p className="text-xs text-slate-400">Turma: {selectedClass?.name} • BMF4 Medicina</p>
-                </div>
-              </div>
-
-              <button
-                onClick={() => setIsShareModalOpen(false)}
-                className="p-1.5 rounded-xl hover:bg-slate-800 text-slate-400 hover:text-white transition-colors cursor-pointer"
-              >
-                <X className="w-5 h-5" />
-              </button>
-            </div>
-
-            {/* Modal Tabs: Email, WhatsApp, Chromecast */}
-            <div className="grid grid-cols-3 gap-1.5 border-b border-slate-800 pb-3">
-              <button
-                type="button"
-                onClick={() => setModalTab('email')}
-                className={`py-2 px-2 rounded-xl text-xs font-bold transition-all flex items-center justify-center gap-1.5 cursor-pointer ${
-                  modalTab === 'email'
-                    ? 'bg-indigo-600 text-white shadow-xs'
-                    : 'bg-slate-800 text-slate-400 hover:text-slate-200'
-                }`}
-              >
-                <Mail className="w-3.5 h-3.5" />
-                <span className="truncate">E-mail</span>
-              </button>
-
-              <button
-                type="button"
-                onClick={() => setModalTab('whatsapp')}
-                className={`py-2 px-2 rounded-xl text-xs font-bold transition-all flex items-center justify-center gap-1.5 cursor-pointer ${
-                  modalTab === 'whatsapp'
-                    ? 'bg-emerald-600 text-white shadow-xs'
-                    : 'bg-slate-800 text-slate-400 hover:text-slate-200'
-                }`}
-              >
-                <MessageCircle className="w-3.5 h-3.5" />
-                <span className="truncate">WhatsApp</span>
-              </button>
-
-              <button
-                type="button"
-                onClick={() => setModalTab('chromecast')}
-                className={`py-2 px-2 rounded-xl text-xs font-bold transition-all flex items-center justify-center gap-1.5 cursor-pointer ${
-                  modalTab === 'chromecast'
-                    ? 'bg-sky-600 text-white shadow-xs'
-                    : 'bg-slate-800 text-slate-400 hover:text-slate-200'
-                }`}
-              >
-                <Cast className="w-3.5 h-3.5" />
-                <span className="truncate">Chromecast</span>
-              </button>
-            </div>
-
-            {/* TAB 1: E-MAIL */}
-            {modalTab === 'email' && (
-              <div className="space-y-3 animate-in fade-in">
-                <div className="space-y-1">
-                  <div className="flex items-center justify-between">
-                    <label className="text-xs font-bold text-slate-300">
-                      E-mail do Docente / TV do Laboratório
-                    </label>
-                    {activeProfessor?.email && (
-                      <button
-                        type="button"
-                        onClick={() => setTvEmailRecipient(activeProfessor.email)}
-                        className="text-[10px] text-indigo-400 font-bold hover:underline cursor-pointer"
-                      >
-                        Usar meu e-mail ({activeProfessor.email.split('@')[0]})
-                      </button>
-                    )}
-                  </div>
-                  <input
-                    type="email"
-                    value={tvEmailRecipient}
-                    onChange={(e) => setTvEmailRecipient(e.target.value)}
-                    placeholder="Digite seu e-mail para abrir no computador ou TV"
-                    className="w-full px-3.5 py-2.5 bg-slate-950 border border-slate-700 rounded-xl text-xs sm:text-sm font-semibold text-white focus:ring-2 focus:ring-indigo-500 focus:outline-none"
-                  />
-                  <p className="text-[11px] text-slate-400">
-                    O link enviado abre o telão do QR Code dinâmico em tela cheia no navegador, ideal para espelhamento em TVs.
-                  </p>
-                </div>
-
-                <div className="space-y-1">
-                  <label className="text-xs font-bold text-slate-300">
-                    Prévia do Link
-                  </label>
-                  <div className="p-2.5 bg-slate-950 rounded-xl border border-slate-800 font-mono text-[11px] text-teal-400 break-all select-all">
-                    {tvScreenUrl}
-                  </div>
-                </div>
-
-                <div className="flex flex-wrap items-center gap-2 pt-1">
-                  <button
-                    type="button"
-                    onClick={handleSendTvLinkByEmail}
-                    className="flex-1 py-2.5 bg-indigo-600 hover:bg-indigo-700 text-white rounded-xl font-bold text-xs shadow-md flex items-center justify-center gap-2 cursor-pointer transition-all active:scale-95"
-                  >
-                    <Send className="w-4 h-4" />
-                    <span>Enviar por E-mail</span>
-                  </button>
-
-                  <button
-                    type="button"
-                    onClick={handleCopyTvLink}
-                    className="px-3.5 py-2.5 bg-slate-800 hover:bg-slate-700 text-sky-300 rounded-xl font-bold text-xs border border-slate-700 flex items-center gap-1.5 cursor-pointer transition-colors"
-                  >
-                    {copiedTvLink ? <Check className="w-4 h-4 text-emerald-400" /> : <Copy className="w-4 h-4" />}
-                    <span>{copiedTvLink ? 'Copiado!' : 'Copiar Link'}</span>
-                  </button>
-                </div>
-              </div>
-            )}
-
-            {/* TAB 2: WHATSAPP */}
-            {modalTab === 'whatsapp' && (
-              <div className="space-y-3 animate-in fade-in">
-                <p className="text-xs text-slate-300 leading-relaxed">
-                  Envie o link direto da projeção para o WhatsApp para abrir no PC conectado à TV do laboratório.
-                </p>
-
-                <div className="p-3 bg-slate-950 rounded-xl border border-slate-800 text-xs font-mono text-emerald-400 break-all">
-                  {tvScreenUrl}
-                </div>
-
-                <div className="flex flex-wrap items-center gap-2 pt-1">
-                  <button
-                    type="button"
-                    onClick={handleShareTvWhatsApp}
-                    className="flex-1 py-2.5 bg-emerald-600 hover:bg-emerald-700 text-white rounded-xl font-bold text-xs shadow-md flex items-center justify-center gap-2 cursor-pointer transition-all active:scale-95"
-                  >
-                    <MessageCircle className="w-4 h-4" />
-                    <span>Compartilhar no WhatsApp</span>
-                  </button>
-
-                  <button
-                    type="button"
-                    onClick={handleCopyTvLink}
-                    className="px-3.5 py-2.5 bg-slate-800 hover:bg-slate-700 text-slate-200 rounded-xl font-bold text-xs border border-slate-700 flex items-center gap-1.5 cursor-pointer transition-colors"
-                  >
-                    {copiedTvLink ? <Check className="w-4 h-4 text-emerald-400" /> : <Copy className="w-4 h-4" />}
-                    <span>{copiedTvLink ? 'Copiado!' : 'Copiar Link'}</span>
-                  </button>
-                </div>
-              </div>
-            )}
-
-            {/* TAB 3: CHROMECAST */}
-            {modalTab === 'chromecast' && (
-              <div className="space-y-3 animate-in fade-in">
-                <div className="p-3 bg-slate-950 rounded-xl border border-sky-800/60 space-y-2">
-                  <div className="flex items-center gap-2 text-sky-400 font-bold text-xs">
-                    <Cast className="w-4 h-4" />
-                    <span>Transmissão Sem Fio para Smart TV / Chromecast</span>
-                  </div>
-                  <p className="text-[11px] text-slate-300 leading-relaxed">
-                    Você pode projetar esta aba diretamente no Chromecast ou Smart TV da sala de aula.
-                  </p>
-                </div>
-
-                <div className="flex flex-wrap items-center gap-2 pt-1">
-                  <button
-                    type="button"
-                    onClick={handleStartCast}
-                    className="flex-1 py-2.5 bg-sky-600 hover:bg-sky-700 text-white rounded-xl font-bold text-xs shadow-md flex items-center justify-center gap-2 cursor-pointer transition-all active:scale-95"
-                  >
-                    <Cast className="w-4 h-4" />
-                    <span>Iniciar Transmissão (Cast)</span>
-                  </button>
-
-                  <button
-                    type="button"
-                    onClick={handleCopyTvLink}
-                    className="px-3.5 py-2.5 bg-slate-800 hover:bg-slate-700 text-slate-200 rounded-xl font-bold text-xs border border-slate-700 flex items-center gap-1.5 cursor-pointer transition-colors"
-                  >
-                    {copiedTvLink ? <Check className="w-4 h-4 text-emerald-400" /> : <Copy className="w-4 h-4" />}
-                    <span>{copiedTvLink ? 'Copiado!' : 'Copiar Link'}</span>
-                  </button>
-                </div>
-              </div>
-            )}
-
-          </div>
-        </div>
-      )}
-
       {/* Footer of Projection Screen */}
       <footer className="px-4 sm:px-8 py-3 border-t border-slate-800/80 bg-slate-900/90 flex flex-col sm:flex-row items-center justify-between text-[11px] text-slate-400 gap-2">
         <div className="flex items-center gap-2">
@@ -1606,7 +1528,12 @@ export const LabProjectionScreen: React.FC<LabProjectionScreenProps> = ({
           isOpen={isLessonModalOpen}
           onClose={() => setIsLessonModalOpen(false)}
           isTelaoIntent={true}
-          onSessionStarted={() => {
+          onSessionStarted={(startedPeriod) => {
+            if (startedPeriod) {
+              setSelectedPeriod(startedPeriod);
+            } else {
+              setSelectedPeriod(null);
+            }
             setIsLessonModalOpen(false);
             playBeep('session_start');
           }}

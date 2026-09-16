@@ -13,6 +13,7 @@ import { useLab } from '../context/LabContext';
 import { AttendanceStatus, Student } from '../types';
 import { StudentAvatar } from './StudentAvatar';
 import { exportModernRosterExcel } from '../utils/exportExcel';
+import { matchStudentClass } from '../utils/attendanceHelpers';
 
 interface FullRosterModalProps {
   isOpen: boolean;
@@ -52,9 +53,9 @@ export const FullRosterModal: React.FC<FullRosterModalProps> = ({
   const selectedClass = classes.find(c => c.id === selectedClassId);
   const classStudents = useMemo(() => {
     return students
-      .filter(s => s.classGroupId === selectedClassId)
+      .filter(s => matchStudentClass(s.classGroupId, selectedClassId, classes))
       .sort((a, b) => a.name.localeCompare(b.name, 'pt-BR'));
-  }, [students, selectedClassId]);
+  }, [students, selectedClassId, classes]);
 
   const filteredStudents = useMemo(() => {
     return classStudents

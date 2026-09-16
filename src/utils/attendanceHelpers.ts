@@ -4,6 +4,8 @@
  * across all components (Telão, ReportsView, exportExcel, LabContext).
  */
 
+import { LabSession, Student } from '../types';
+
 export function normalizeStudentRa(ra: string | undefined | null): string {
   if (!ra) return '';
   return String(ra).trim().replace(/\D/g, '');
@@ -152,3 +154,331 @@ export function getRecordStatusLabel(rec: any): string {
     case 'absent': return 'Falta';
   }
 }
+
+export function matchStudentClass(
+  studentClassGroupId?: string | null,
+  targetClassId?: string | null,
+  classesList?: Array<{ id: string; name: string; code?: string }> | null
+): boolean {
+  if (!studentClassGroupId || !targetClassId) return false;
+  const cleanStudent = String(studentClassGroupId).trim().toLowerCase();
+  const cleanTarget = String(targetClassId).trim().toLowerCase();
+  if (cleanStudent === cleanTarget) return true;
+
+  if (classesList && Array.isArray(classesList)) {
+    const targetClass = classesList.find(
+      c =>
+        c.id.toLowerCase() === cleanTarget ||
+        c.name.trim().toLowerCase() === cleanTarget ||
+        (c.code && c.code.trim().toLowerCase() === cleanTarget)
+    );
+    if (targetClass) {
+      if (
+        cleanStudent === targetClass.id.toLowerCase() ||
+        cleanStudent === targetClass.name.trim().toLowerCase() ||
+        (targetClass.code && cleanStudent === targetClass.code.trim().toLowerCase())
+      ) {
+        return true;
+      }
+    }
+
+    const studentClass = classesList.find(
+      c =>
+        c.id.toLowerCase() === cleanStudent ||
+        c.name.trim().toLowerCase() === cleanStudent ||
+        (c.code && c.code.trim().toLowerCase() === cleanStudent)
+    );
+    if (studentClass && targetClass) {
+      if (
+        studentClass.id.toLowerCase() === targetClass.id.toLowerCase() ||
+        studentClass.name.trim().toLowerCase() === targetClass.name.trim().toLowerCase()
+      ) {
+        return true;
+      }
+    }
+  }
+
+  return false;
+}
+
+/**
+ * Reconciles student attendance across sessions on the same date (e.g., Aula Teórica and Aula Prática rotation).
+ * Resolves the issue where a student who attended 1ª Aula in Teórica and 2ª Aula in Prática
+ * is incorrectly marked absent for 2ª Aula Teórica or 1ª Aula Prática.
+ */
+export function reconcileSessionsAttendance(
+  sessionsList: LabSession[],
+  studentsList?: Student[] | Array<{ id: string; registrationNumber?: string; name?: string; classGroupId?: string }>
+): LabSession[] {
+  if (!Array.isArray(sessionsList) || sessionsList.length === 0) return sessionsList;
+
+  // Group sessions by normalized date (YYYY-MM-DD)
+  const sessionsByDate: Record<string, LabSession[]> = {};
+  sessionsList.forEach(s => {
+    if (!s) return;
+    const dateKey = (s.date || '').split('T')[0] || 'sem_data';
+    if (!sessionsByDate[dateKey]) {
+      sessionsByDate[dateKey] = [];
+    }
+    sessionsByDate[dateKey].push(s);
+  });
+
+  let hasChanges = false;
+  // Deep clone sessions map for safe immutability
+  const newSessionsMap: Record<string, LabSession> = {};
+  sessionsList.forEach(s => {
+    const clonedAtt: Record<string, any> = {};
+    if (s.attendance) {
+      Object.entries(s.attendance).forEach(([k, v]) => {
+        clonedAtt[k] = v ? { ...v } : v;
+      });
+    }
+    newSessionsMap[s.id] = {
+      ...s,
+      attendance: clonedAtt
+    };
+  });
+
+  for (const [, daySessions] of Object.entries(sessionsByDate)) {
+    if (daySessions.length === 1) {
+      // Single session on this date: check if only 1 period was ever held
+      const s = daySessions[0];
+      if (!s || !s.attendance) continue;
+
+      const records = Object.values(s.attendance);
+      const hasAnyP1 = records.some((rec: any) => rec?.period1Status === 'present' || rec?.p1StartStatus === 'present' || rec?.p1EndStatus === 'present');
+      const hasAnyP2 = records.some((rec: any) => rec?.period2Status === 'present' || rec?.p2StartStatus === 'present' || rec?.p2EndStatus === 'present');
+
+      // If only Period 1 had attendances and session was created for 1ª Aula (or Period 2 was locked / never held)
+      if (hasAnyP1 && !hasAnyP2 && (s.activePeriod === '1' || s.isPeriod2Locked)) {
+        for (const [stId, rec] of Object.entries(s.attendance)) {
+          if (rec && (rec.period1Status === 'present' || rec.p1StartStatus === 'present') && rec.period2Status === 'absent') {
+            newSessionsMap[s.id].attendance![stId] = {
+              ...rec,
+              period2Status: 'present',
+              p2StartStatus: 'present',
+              p2EndStatus: 'present',
+              status: 'present',
+              period2Timestamp: rec.period1Timestamp || rec.timestamp
+            };
+            hasChanges = true;
+          }
+        }
+      } else if (hasAnyP2 && !hasAnyP1 && (s.activePeriod === '2' || s.isPeriod1Locked)) {
+        // If only Period 2 had attendances and session was created for 2ª Aula (or Period 1 was locked / never held)
+        for (const [stId, rec] of Object.entries(s.attendance)) {
+          if (rec && (rec.period2Status === 'present' || rec.p2StartStatus === 'present') && rec.period1Status === 'absent') {
+            newSessionsMap[s.id].attendance![stId] = {
+              ...rec,
+              period1Status: 'present',
+              p1StartStatus: 'present',
+              p1EndStatus: 'present',
+              status: 'present',
+              period1Timestamp: rec.period2Timestamp || rec.timestamp
+            };
+            hasChanges = true;
+          }
+        }
+      }
+      continue;
+    }
+
+    // Multiple sessions on this date (e.g. Aula Teórica + Aula Prática)
+    // Gather all students recorded or known on this day
+    interface CandidateStudent {
+      id?: string;
+      ra?: string;
+      cleanRa?: string;
+      name?: string;
+      originalKeys: Set<string>;
+    }
+    const studentCandidates: CandidateStudent[] = [];
+
+    const getOrAddCandidate = (id?: string, ra?: string, name?: string, keyUsed?: string): CandidateStudent => {
+      const cleanRa = normalizeStudentRa(ra);
+      let found = studentCandidates.find(c => {
+        if (id && c.id && c.id === id) return true;
+        if (cleanRa && c.cleanRa && matchStudentRa(c.cleanRa, cleanRa)) return true;
+        return false;
+      });
+      if (!found) {
+        found = {
+          id: id || undefined,
+          ra: ra || undefined,
+          cleanRa: cleanRa || undefined,
+          name: name || undefined,
+          originalKeys: new Set<string>()
+        };
+        studentCandidates.push(found);
+      }
+      if (id && !found.id) found.id = id;
+      if (ra && !found.ra) found.ra = ra;
+      if (cleanRa && !found.cleanRa) found.cleanRa = cleanRa;
+      if (name && !found.name) found.name = name;
+      if (keyUsed) found.originalKeys.add(keyUsed);
+      return found;
+    };
+
+    // Scan day sessions to index all students who have checkins
+    daySessions.forEach(s => {
+      if (!s.attendance) return;
+      Object.entries(s.attendance).forEach(([k, rec]: [string, any]) => {
+        if (!rec) return;
+        const stId = rec.studentId || rec.id || (!k.match(/^\d+$/) ? k : undefined);
+        const stRa = rec.studentRa || rec.registrationNumber || rec.ra || (k.match(/^\d+$/) ? k : undefined);
+        const stName = rec.studentName || rec.name;
+        getOrAddCandidate(stId, stRa, stName, k);
+      });
+    });
+
+    // Also include studentsList if provided and matching class
+    if (Array.isArray(studentsList)) {
+      studentsList.forEach(st => {
+        getOrAddCandidate(st.id, st.registrationNumber, st.name);
+      });
+    }
+
+    // For each student, check Period 1 and Period 2 attendance across all sessions of the day
+    for (const candidate of studentCandidates) {
+      let bestP1Status: 'present' | 'late' | 'excused' | 'absent' = 'absent';
+      let bestP1Time: string | undefined;
+      let bestP2Status: 'present' | 'late' | 'excused' | 'absent' = 'absent';
+      let bestP2Time: string | undefined;
+      let recordedStudentName = candidate.name;
+      let recordedStudentRa = candidate.ra;
+      let recordedStudentId = candidate.id;
+
+      for (const s of daySessions) {
+        const rec = getStudentAttendanceRecord(s.attendance, {
+          id: candidate.id,
+          registrationNumber: candidate.ra || candidate.cleanRa
+        });
+        if (!rec) continue;
+
+        if (!recordedStudentName && rec.studentName) recordedStudentName = rec.studentName;
+        if (!recordedStudentRa && (rec.studentRa || rec.registrationNumber)) recordedStudentRa = rec.studentRa || rec.registrationNumber;
+        if (!recordedStudentId && (rec.studentId || rec.id)) recordedStudentId = rec.studentId || rec.id;
+
+        // Check Period 1
+        const isP1Pres = rec.period1Status === 'present' || rec.p1StartStatus === 'present' || rec.p1EndStatus === 'present';
+        const isP1Late = rec.period1Status === 'late' || rec.p1StartStatus === 'late';
+        const isP1Exc = rec.period1Status === 'excused';
+
+        if (isP1Pres) {
+          bestP1Status = 'present';
+          bestP1Time = bestP1Time || rec.period1Timestamp || rec.p1StartTimestamp || rec.p1EndTimestamp || rec.timestamp;
+        } else if (isP1Late && bestP1Status !== 'present') {
+          bestP1Status = 'late';
+          bestP1Time = bestP1Time || rec.period1Timestamp || rec.timestamp;
+        } else if (isP1Exc && bestP1Status === 'absent') {
+          bestP1Status = 'excused';
+        }
+
+        // Check Period 2
+        const isP2Pres = rec.period2Status === 'present' || rec.p2StartStatus === 'present' || rec.p2EndStatus === 'present';
+        const isP2Late = rec.period2Status === 'late' || rec.p2StartStatus === 'late';
+        const isP2Exc = rec.period2Status === 'excused';
+
+        if (isP2Pres) {
+          bestP2Status = 'present';
+          bestP2Time = bestP2Time || rec.period2Timestamp || rec.p2StartTimestamp || rec.p2EndTimestamp || rec.timestamp;
+        } else if (isP2Late && bestP2Status !== 'present') {
+          bestP2Status = 'late';
+          bestP2Time = bestP2Time || rec.period2Timestamp || rec.timestamp;
+        } else if (isP2Exc && bestP2Status === 'absent') {
+          bestP2Status = 'excused';
+        }
+      }
+
+      // If student attended at least one period on this date in ANY session:
+      // Reconcile across all sessions on this date so they do NOT get absence in the other session
+      if (bestP1Status !== 'absent' || bestP2Status !== 'absent') {
+        for (const s of daySessions) {
+          const currentAtt = newSessionsMap[s.id].attendance || {};
+          const matchedKey = Object.keys(currentAtt).find(k => {
+            if (candidate.originalKeys.has(k)) return true;
+            if (candidate.id && k === candidate.id) return true;
+            if (candidate.ra && (k === candidate.ra || matchStudentRa(k, candidate.ra))) return true;
+            const item = currentAtt[k] as any;
+            if (!item) return false;
+            if (candidate.id && (item.studentId === candidate.id || item.id === candidate.id)) return true;
+            if (candidate.cleanRa && matchStudentRa(item.studentRa || item.registrationNumber, candidate.cleanRa)) return true;
+            return false;
+          });
+
+          const primaryKey = matchedKey || candidate.id || candidate.ra || Array.from(candidate.originalKeys)[0];
+          if (!primaryKey) continue;
+
+          const existingRecord = currentAtt[primaryKey];
+
+          if (existingRecord) {
+            let recordChanged = false;
+            const updatedRec = { ...existingRecord };
+
+            // Reconcile Period 1
+            if (bestP1Status !== 'absent' && (updatedRec.period1Status === 'absent' || !updatedRec.period1Status)) {
+              updatedRec.period1Status = bestP1Status;
+              if (bestP1Status === 'present') {
+                updatedRec.p1StartStatus = 'present';
+                updatedRec.p1EndStatus = 'present';
+              }
+              if (bestP1Time && !updatedRec.period1Timestamp) {
+                updatedRec.period1Timestamp = bestP1Time;
+              }
+              recordChanged = true;
+            }
+
+            // Reconcile Period 2
+            if (bestP2Status !== 'absent' && (updatedRec.period2Status === 'absent' || !updatedRec.period2Status)) {
+              updatedRec.period2Status = bestP2Status;
+              if (bestP2Status === 'present') {
+                updatedRec.p2StartStatus = 'present';
+                updatedRec.p2EndStatus = 'present';
+              }
+              if (bestP2Time && !updatedRec.period2Timestamp) {
+                updatedRec.period2Timestamp = bestP2Time;
+              }
+              recordChanged = true;
+            }
+
+            // Consolidate overall status
+            if (updatedRec.period1Status === 'present' || updatedRec.period2Status === 'present') {
+              if (updatedRec.status !== 'present') {
+                updatedRec.status = 'present';
+                recordChanged = true;
+              }
+            }
+
+            if (recordChanged) {
+              currentAtt[primaryKey] = updatedRec;
+              hasChanges = true;
+            }
+          } else {
+            // Student was present in another session today (e.g. Theory), cross-populate into Practice
+            currentAtt[primaryKey] = {
+              studentId: candidate.id || primaryKey,
+              studentRa: candidate.ra || recordedStudentRa || primaryKey,
+              studentName: candidate.name || recordedStudentName || 'Estudante',
+              period1Status: bestP1Status,
+              period2Status: bestP2Status,
+              p1StartStatus: bestP1Status,
+              p1EndStatus: bestP1Status,
+              p2StartStatus: bestP2Status,
+              p2EndStatus: bestP2Status,
+              status: (bestP1Status === 'present' || bestP2Status === 'present') ? 'present' : (bestP1Status === 'late' || bestP2Status === 'late') ? 'late' : 'excused',
+              timestamp: bestP1Time || bestP2Time || '08:00:00',
+              period1Timestamp: bestP1Time,
+              period2Timestamp: bestP2Time,
+              checkinMethod: 'dynamic_qr',
+              observation: 'Presença conciliada entre Teoria e Prática'
+            };
+            hasChanges = true;
+          }
+        }
+      }
+    }
+  }
+
+  return hasChanges ? Object.values(newSessionsMap) : sessionsList;
+}
+
