@@ -120,14 +120,12 @@ export const ClassesManagement: React.FC = () => {
     const cleanDiscipline = disciplineName.trim();
     const lowerName = cleanTurma.toLowerCase();
 
-    // Validate against immutable BMF4 constants
+    // Do not force immutable constants for general new class creation unless editing or explicitly Turma B
     let targetId = editingClass?.id;
-    if (!targetId) {
-      if (lowerName.includes('turma b') || lowerName.includes('bmf4')) {
-        targetId = BMF4_CLASS_IDS.TURMA_B;
-      } else if (lowerName.includes('turma a')) {
-        targetId = BMF4_CLASS_IDS.TURMA_A;
-      }
+    if (!targetId && cleanTurma.toLowerCase() === 'turma b') {
+      targetId = BMF4_CLASS_IDS.TURMA_B;
+    } else if (!targetId && cleanTurma.toLowerCase() === 'turma a') {
+      targetId = BMF4_CLASS_IDS.TURMA_A;
     }
 
     const existingById = targetId ? classes.find(c => c.id === targetId) : null;
