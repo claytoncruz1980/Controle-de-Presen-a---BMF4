@@ -452,17 +452,12 @@ export const ClassesManagement: React.FC = () => {
                   <button
                     type="button"
                     id={`btn-delete-class-${cls.id}`}
-                    disabled={classes.length <= 1}
                     onClick={(e) => {
                       e.stopPropagation();
                       setDeletingClass(cls);
                     }}
-                    className={`p-2 rounded-xl transition-colors ${
-                      classes.length <= 1 
-                        ? 'opacity-30 cursor-not-allowed text-slate-400 bg-slate-50' 
-                        : 'bg-rose-50 hover:bg-rose-100 text-rose-700 border border-rose-200'
-                    }`}
-                    title={classes.length <= 1 ? 'Mínimo de 1 turma obrigatório' : 'Excluir Turma'}
+                    className="p-2 rounded-xl bg-rose-50 hover:bg-rose-100 text-rose-700 border border-rose-200 transition-colors cursor-pointer"
+                    title="Excluir Turma"
                   >
                     <Trash2 className="w-3.5 h-3.5" />
                   </button>

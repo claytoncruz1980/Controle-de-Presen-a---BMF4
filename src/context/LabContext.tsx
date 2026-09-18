@@ -767,30 +767,8 @@ export const LabProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
   const [classes, setClasses] = useState<ClassGroup[]>(() => {
     const isInit = typeof window !== 'undefined' ? localStorage.getItem(STORAGE_PREFIX + 'app_initialized') === 'true' : false;
     const saved = localStorage.getItem(STORAGE_PREFIX + 'classes');
+    // Keep parsed as is without forcing old BMF4 normalization if user cleared or renamed them
     let parsed: ClassGroup[] = saved ? JSON.parse(saved) : (!isInit ? INITIAL_CLASSES : []);
-
-    // Normalize against immutable BMF4_CLASS_IDS to prevent duplication or hiding
-    parsed = parsed.map(c => {
-      if (!c) return c;
-      const nameLower = (c.name || '').toLowerCase();
-      if (nameLower.includes('turma b') || nameLower.includes('bmf4') || c.id === BMF4_CLASS_IDS.TURMA_B) {
-        return {
-          ...c,
-          id: BMF4_CLASS_IDS.TURMA_B,
-          name: 'Turma B',
-          discipline: c.discipline || 'BMF4 - Bases Morfofuncionais 4',
-        };
-      }
-      if (nameLower.includes('turma a') || c.id === BMF4_CLASS_IDS.TURMA_A) {
-        return {
-          ...c,
-          id: BMF4_CLASS_IDS.TURMA_A,
-          name: 'Turma A',
-          discipline: c.discipline || 'BMF4 - Bases Morfofuncionais 4',
-        };
-      }
-      return c;
-    });
 
     // Deduplicate by ID
     const seenIds = new Set<string>();

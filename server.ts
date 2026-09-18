@@ -158,6 +158,34 @@ function saveDatabase(state: ServerDatabase, immediate = false) {
   }
 }
 
+// Periodic Backup Routine (every 30 minutes)
+setInterval(async () => {
+  try {
+    if (!fs.existsSync(DB_DIR)) return;
+    const backupDir = path.join(DB_DIR, "backups");
+    if (!fs.existsSync(backupDir)) {
+      fs.mkdirSync(backupDir, { recursive: true });
+    }
+    const timestamp = new Date().toISOString().replace(/[:.]/g, "-");
+    const backupFile = path.join(backupDir, `db-backup-${timestamp}.json`);
+    const json = JSON.stringify(dbState, null, 2);
+    await fs.promises.writeFile(backupFile, json, "utf-8");
+
+    // Keep only last 20 backups
+    const files = await fs.promises.readdir(backupDir);
+    const jsonFiles = files.filter(f => f.startsWith("db-backup-") && f.endsWith(".json")).sort();
+    if (jsonFiles.length > 20) {
+      const oldFiles = jsonFiles.slice(0, jsonFiles.length - 20);
+      for (const oldFile of oldFiles) {
+        await fs.promises.unlink(path.join(backupDir, oldFile)).catch(() => {});
+      }
+    }
+    console.log(`[Backup Service] Periodic snapshot saved successfully: db-backup-${timestamp}.json`);
+  } catch (err) {
+    console.error("[Backup Service] Error creating periodic backup:", err);
+  }
+}, 30 * 60 * 1000);
+
 function mergeAttendanceRecord(currentRec: any, incomingRec: any): any {
   if (!currentRec && !incomingRec) return null;
   if (!currentRec) return incomingRec;
@@ -1118,32 +1146,29 @@ async function startServer() {
       let isAlreadyPresent = false;
       if (existingRec) {
         if (currentPeriod === '1' || currentPeriod === 'p1_start' || currentPeriod === 'p1_end') {
-          if (existingRec.period1Status === 'present' || existingRec.p1StartStatus === 'present' || existingRec.p1EndStatus === 'present') {
+          if (existingRec.period1Status === 'present' || existingRec.p1StartStatus === 'present' || existingRec.p1EndStatus === 'present' || (currentPeriod === '1' && existingRec.status === 'present')) {
             isAlreadyPresent = true;
           }
         } else if (currentPeriod === '2' || currentPeriod === 'p2_start' || currentPeriod === 'p2_end') {
-          if (existingRec.period2Status === 'present' || existingRec.p2StartStatus === 'present' || existingRec.p2EndStatus === 'present') {
+          if (existingRec.period2Status === 'present' || existingRec.p2StartStatus === 'present' || existingRec.p2EndStatus === 'present' || (currentPeriod === '2' && existingRec.status === 'present')) {
             isAlreadyPresent = true;
           }
-        } else if (currentPeriod === 'both') {
-          const hasP1 = existingRec.period1Status === 'present' || existingRec.p1StartStatus === 'present';
-          const hasP2 = existingRec.period2Status === 'present' || existingRec.p2StartStatus === 'present';
-          if (hasP1 && hasP2) {
-            isAlreadyPresent = true;
-          }
-        } else if (currentPeriod === 'activity_single') {
-          if (existingRec.status === 'present' || existingRec.status === 'late') {
+        } else if (currentPeriod === 'both' || currentPeriod === 'activity_single') {
+          if (existingRec.status === 'present' || existingRec.status === 'late' || existingRec.period1Status === 'present' || existingRec.period2Status === 'present') {
             isAlreadyPresent = true;
           }
         }
       }
 
-      // Allow re-confirmation / updates during testing and usage
-      /*
       if (isAlreadyPresent) {
-        ...
+        return res.json({
+          success: false,
+          alreadyPresent: true,
+          student,
+          existingRecord: existingRec,
+          message: `Presença já registrada anteriormente nesta aula! O aluno(a) ${student.name} (RA: ${student.registrationNumber}) já possui presença confirmada para o período/aula atual. Não é permitido marcar presença mais de uma vez.`
+        });
       }
-      */
 
       let newPeriod1 = existingRec?.period1Status || 'absent';
       let newPeriod2 = existingRec?.period2Status || 'absent';

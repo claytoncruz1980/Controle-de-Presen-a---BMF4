@@ -660,6 +660,20 @@ export const LovableDashboard: React.FC<LovableDashboardProps> = ({
                   <Tv className="w-3.5 h-3.5 text-sky-600" />
                   <span>Modo Telão & TV</span>
                 </button>
+
+                <button
+                  type="button"
+                  id="btn-tab-email-qr"
+                  onClick={() => setQrActiveTab('email')}
+                  className={`px-3.5 py-1.5 rounded-xl text-xs font-bold flex items-center gap-1.5 transition-all cursor-pointer ${
+                    qrActiveTab === 'email'
+                      ? 'bg-white text-indigo-900 shadow-xs'
+                      : 'text-slate-600 hover:text-slate-900'
+                  }`}
+                >
+                  <Mail className="w-3.5 h-3.5 text-indigo-600" />
+                  <span>Enviar por E-mail</span>
+                </button>
               </div>
 
               {/* Status Badge */}

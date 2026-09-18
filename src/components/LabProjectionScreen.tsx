@@ -174,9 +174,27 @@ export const LabProjectionScreen: React.FC<LabProjectionScreenProps> = ({
   }, [urlTurma, classes, selectedClassId, setSelectedClassId]);
 
   // Safe fallback for effective class so it always displays correctly on new devices/TVs
-  const effectiveClassId = (urlTurma && classes.some(c => c.id === urlTurma || c.name.toLowerCase() === urlTurma.toLowerCase()))
-    ? (classes.find(c => c.id === urlTurma || c.name.toLowerCase() === urlTurma.toLowerCase())?.id || urlTurma)
-    : (activeSession?.classGroupId || selectedClassId || classes[0]?.id || 'class-bmf4-default');
+  const effectiveClassId = useMemo(() => {
+    if (urlTurma) {
+      const foundByUrl = classes.find(c => 
+        c.id === urlTurma || 
+        c.name.trim().toLowerCase() === urlTurma.trim().toLowerCase() ||
+        (c.code && c.code.trim().toLowerCase() === urlTurma.trim().toLowerCase())
+      );
+      if (foundByUrl) return foundByUrl.id;
+      return urlTurma;
+    }
+    if (selectedClassId && classes.some(c => c.id === selectedClassId)) {
+      return selectedClassId;
+    }
+    if (activeSession?.classGroupId && classes.some(c => c.id === activeSession.classGroupId)) {
+      return activeSession.classGroupId;
+    }
+    if (classes.length > 0) {
+      return classes[0].id;
+    }
+    return selectedClassId || 'class-bmf4-default';
+  }, [urlTurma, classes, selectedClassId, activeSession?.classGroupId]);
 
   const urlSessionId = getProjectionParam('session') || getProjectionParam('sessionid') || '';
 
@@ -376,19 +394,20 @@ export const LabProjectionScreen: React.FC<LabProjectionScreenProps> = ({
       (c.name && c.name.trim().toLowerCase() === effectiveClassId.trim().toLowerCase())
     );
     if (found) return found;
+    if (classes.length > 0) return classes[0];
     return {
       id: effectiveClassId,
-      name: 'Turma BMF4 (Medicina)',
-      code: 'MED-BMF4',
+      name: 'Turma Ativa',
+      code: 'TURMA',
       discipline: 'BMF4 - Bases Morfofuncionais 4',
       course: 'Medicina' as const,
-      semester: '4º Semestre 2026',
-      laboratoryRoom: 'Laboratório de Anatomia',
+      semester: 'Semestre Letivo 2026',
+      laboratoryRoom: 'Laboratório de Anatomia & Morfologia',
       schedule: '07:30 - 12:00',
       color: '#0284c7',
       totalStudents: 0,
       professorId: activeProfessor?.id || 'prof-admin-1',
-      professorName: activeProfessor?.name || 'Prof. Dr. Juliano Pereira'
+      professorName: activeProfessor?.name || 'Docente Responsável'
     };
   }, [classes, effectiveClassId, activeProfessor]);
 
